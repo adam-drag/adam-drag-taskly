@@ -21,7 +21,7 @@
       "Edit(.claude/**)",
       "Edit(.github/**)",
       "Edit(**/package*.json)",
-      "Edit(**/*config*.ts)",
+      "Edit(**/*config.ts)",
       "Edit(frontend/src/test/setup.ts)",
       "Edit(frontend/src/design-system/**)",
       "Edit(backend/prisma/**)"
