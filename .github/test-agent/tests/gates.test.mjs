@@ -118,17 +118,36 @@ test('guard refuses a weak matcher that replaces a property line inside a multi-
   }
 });
 
-test('guard accepts a declared edit plus a weak-matcher test appended in its own hunk', () => {
-  const lines = ["it('a', () => { expect(f()).toBe(3); });", ...Array.from({ length: 8 }, (_, i) => `// ${i}`)];
-  const add = "it('b', () => { expect(g()).toBeUndefined(); });";
-  const afterLines = ["it('a', () => { expect(f()).toBe(4); });", ...lines.slice(1), add];
+test('guard refuses a weak matcher in a declared file that lost an assertion in another hunk', () => {
+  const lines = ["it('a', () => {", '  expect(f()).toBe(3);', ...Array.from({ length: 8 }, (_, i) => `  // ${i}`), '});'];
+  const afterLines = [lines[0], ...lines.slice(2, 10), '  expect(f()).toBeDefined();', lines[10]];
   const { before, after } = existingFile(`${lines.join('\n')}\n`, `${afterLines.join('\n')}\n`);
   const patch = hunkPatch([
-    ['@@ -1,2 +1,2 @@', `-${lines[0]}`, `+${afterLines[0]}`, ` ${lines[1]}`],
-    ['@@ -9 +9,2 @@', ` ${lines[8]}`, `+${add}`],
+    ['@@ -1,3 +1,2 @@', ` ${lines[0]}`, `-${lines[1]}`, ` ${lines[2]}`],
+    ['@@ -10,2 +9,3 @@', ` ${lines[9]}`, '+  expect(f()).toBeDefined();', ` ${lines[10]}`],
   ]);
   const r = checkPatch(patch, before, after, { humanUpdates: ['backend/tests/x.test.ts'] });
-  assert.equal(r.ok, true, r.violations.join('; '));
+  assert.ok(r.violations.some((v) => v.includes('weak matcher') && v.startsWith('backend/tests/x.test.ts: no-weakening rule')), r.violations.join('; '));
+});
+
+test('guard refuses replacing a human test with a renamed one that uses a weak matcher', () => {
+  const oldTest = "it('x', () => { expect(f()).toBe(3); });";
+  const newTest = "it('x2', () => { expect(f()).toBeDefined(); });";
+  const { before, after } = existingFile(`${oldTest}\n`, `${newTest}\n`);
+  const patch = hunkPatch([['@@ -1 +1 @@', `-${oldTest}`, `+${newTest}`]]);
+  for (const humanUpdates of [[], ['backend/tests/x.test.ts']]) {
+    const r = checkPatch(patch, before, after, { humanUpdates });
+    assert.ok(r.violations.some((v) => v.includes('weak matcher')), r.violations.join('; '));
+  }
+});
+
+test('guard refuses an import edit plus an appended weak-matcher test (accepted false positive)', () => {
+  const imp = "import { expect, it } from 'vitest';";
+  const old = "it('a', () => { expect(f()).toBe(3); });";
+  const add = "it('b', () => { expect(g()).toBeUndefined(); });";
+  const { before, after } = existingFile(`${imp}\n${old}\n`, `import { expect, it, vi } from 'vitest';\n${old}\n${add}\n`);
+  const patch = hunkPatch([['@@ -1,2 +1,3 @@', `-${imp}`, "+import { expect, it, vi } from 'vitest';", ` ${old}`, `+${add}`]]);
+  assert.equal(checkPatch(patch, before, after).ok, false);
 });
 
 // --- scope ---------------------------------------------------------------------------------------

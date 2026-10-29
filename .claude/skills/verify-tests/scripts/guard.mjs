@@ -45,7 +45,7 @@ export function parsePatch(text) {
   for (const chunk of chunks) {
     const lines = chunk.split('\n');
     const m = /^diff --git a\/(.+?) b\/(.+)$/.exec(lines[0]);
-    const f = { a: m ? m[1] : null, b: m ? m[2] : null, status: 'modified', added: 0, removed: 0, addedLines: [], removedLines: [], hunks: [], flags: [] };
+    const f = { a: m ? m[1] : null, b: m ? m[2] : null, status: 'modified', added: 0, removed: 0, addedLines: [], removedLines: [], flags: [] };
     let inHunk = false;
     for (const line of lines.slice(1)) {
       if (!inHunk) {
@@ -55,14 +55,12 @@ export function parsePatch(text) {
         else if (line.startsWith('rename from ') || line.startsWith('rename to ')) f.flags.push('rename');
         else if (line.startsWith('copy from ') || line.startsWith('copy to ')) f.flags.push('copy');
         else if (line.startsWith('Binary files ') || line.startsWith('GIT binary patch')) f.flags.push('binary');
-        else if (line.startsWith('@@')) { inHunk = true; f.hunks.push({ added: [], removed: [] }); }
+        else if (line.startsWith('@@')) inHunk = true;
         continue;
       }
-      if (line.startsWith('@@')) { f.hunks.push({ added: [], removed: [] }); continue; }
-      const hunk = f.hunks[f.hunks.length - 1];
       // Inside a hunk every +/- line is content, also "+++x" or "---x". File headers come before the first @@.
-      if (line.startsWith('+')) { f.added++; f.addedLines.push(line.slice(1)); hunk.added.push(line.slice(1)); }
-      else if (line.startsWith('-')) { f.removed++; f.removedLines.push(line.slice(1)); hunk.removed.push(line.slice(1)); }
+      if (line.startsWith('+')) { f.added++; f.addedLines.push(line.slice(1)); }
+      else if (line.startsWith('-')) { f.removed++; f.removedLines.push(line.slice(1)); }
       else if (line.startsWith('GIT binary patch')) f.flags.push('binary');
     }
     if (f.newMode && f.newMode !== '100644') f.flags.push(f.newMode === '120000' ? 'symlink' : `mode ${f.newMode}`);
@@ -113,12 +111,14 @@ export function checkPatch(patchText, beforeRoot, afterRoot, { humanUpdates = []
       if (e.tests_after < e.tests_before) violations.push(`${f.b}: test cases went down ${e.tests_before} -> ${e.tests_after} (no-weakening)`);
       if (e.expects_after < e.expects_before) violations.push(`${f.b}: expect( calls went down ${e.expects_before} -> ${e.expects_after} (no-weakening)`);
       // New tests appended to an existing file are fine. Changing existing assertions is not, unless the
-      // agent declared the test in human_test_updates, and even then not towards a weak matcher. A hunk
-      // that removes any line (also a property line inside a multi-line toEqual) and adds a weak matcher
-      // counts as a replacement; a hunk that only adds lines is an append.
+      // agent declared the test in human_test_updates, and even then not towards a weak matcher.
+      // The weak-matcher rule is per file and fails closed: an existing test file that loses any line
+      // (an assertion, a property inside a multi-line toEqual, a whole it() block) may not gain a weak
+      // matcher anywhere, declared or not. Edits that only add lines pass. The cost is a refused publish
+      // for a legitimate edit plus a weak-matcher test in the same file; nothing is weakened by it.
       const assertionsRemoved = f.removedLines.some((l) => ASSERTION.test(l));
       if (assertionsRemoved && !declared.has(f.b)) violations.push(`${f.b}: assertion lines removed from an existing test file that is not in human_test_updates (no-weakening)`);
-      if (f.hunks.some((h) => h.removed.length && h.added.some((l) => WEAK_MATCHER.test(l)))) violations.push(`${f.b}: a hunk replaces existing lines and adds a weak matcher (toBeDefined/toBeTruthy/toBeFalsy/toBeUndefined/expect.any/expect.anything) (no-weakening)`);
+      if (f.removed > 0 && f.addedLines.some((l) => WEAK_MATCHER.test(l))) violations.push(`${f.b}: no-weakening rule: this existing test file loses lines and gains a weak matcher (toBeDefined/toBeTruthy/toBeFalsy/toBeUndefined/expect.any/expect.anything); use an exact matcher, or a human pushes this change`);
       editedExisting.push(e);
     }
   }
