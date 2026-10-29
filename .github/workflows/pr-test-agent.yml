@@ -14,7 +14,8 @@ name: PR test agent
 on:
   pull_request:
     types: [opened, synchronize, reopened]
-    branches: [main]
+    # agent-dev only: J1 scratch PRs for live checks. This commit never goes to main.
+    branches: [main, agent-dev]
 
 permissions: {}
 
