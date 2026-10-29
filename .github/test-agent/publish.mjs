@@ -4,7 +4,7 @@
 // through the GitHub Git Data API, or nothing.
 //
 //   node publish.mjs --verify <verify.json> --candidate <dir> --patch <agent patch> --scope <scope.json>
-//                    --gen <gen.json> --out <publish.json>
+//                    --baseline <baseline.json> --gen <gen.json> --out <publish.json>
 // env: GITHUB_TOKEN, GITHUB_REPOSITORY, PR_NUMBER, HEAD_REF, TESTED_SHA, RUN_URL
 import { createHash } from 'node:crypto';
 import { existsSync, lstatSync, readFileSync, writeFileSync } from 'node:fs';
@@ -161,7 +161,7 @@ export async function main(argv) {
     if (reasons.length) {
       Object.assign(out, { reason: reasons.join('; '), checks: reasons });
     } else {
-      const verdictInputs = { scope: readJson(a.scope), gen: readJson(a.gen), verify };
+      const verdictInputs = { scope: readJson(a.scope), baseline: readJson(a.baseline), gen: readJson(a.gen), verify };
       const api = makeApi({ token: env.GITHUB_TOKEN, repo: env.GITHUB_REPOSITORY });
       await publish({ api, verify, files, testedSha, branch: env.HEAD_REF, prNumber: env.PR_NUMBER, runUrl: env.RUN_URL, verdictInputs, out });
     }
