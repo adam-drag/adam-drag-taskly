@@ -35,6 +35,7 @@ const BANNED = [
 const TEST_CASE = /\b(?:it|test)(?:\.(?:concurrent|sequential))?(?:\.each)?\s*[(`]/g;
 const EXPECT = /\bexpect(?:\.soft)?\s*\(/g;
 // An assertion on a line: expect(...) or a chained matcher such as .toBe( / .rejects.
+const REMOVABLE = /^\s*$|^\s*import\b|^\s*[\w$,\s{}]*\}?\s*from\s+['"][^'"]+['"];?\s*$|^\s*[A-Za-z_$][\w$]*,?\s*$|^\s*[)}\]][)}\];,\s]*$/;
 const ASSERTION = /\bexpect(?:\.soft)?\s*\(|\.(?:to[A-Z]\w*|rejects|resolves)\b/;
 // Matchers that accept almost any value. Replacing an existing assertion with one of them weakens it.
 const WEAK_MATCHER = /\.(?:toBeDefined|toBeTruthy|toBeFalsy|toBeUndefined)\s*\(|\bexpect\.(?:any|anything)\s*\(/;
@@ -118,6 +119,10 @@ export function checkPatch(patchText, beforeRoot, afterRoot, { humanUpdates = []
       // for a legitimate edit plus a weak-matcher test in the same file; nothing is weakened by it.
       const assertionsRemoved = f.removedLines.some((l) => ASSERTION.test(l));
       if (assertionsRemoved && !declared.has(f.b)) violations.push(`${f.b}: assertion lines removed from an existing test file that is not in human_test_updates (no-weakening)`);
+      // Outside human_test_updates an existing test file may lose only blank lines, import lines and lines of
+      // closing brackets. Anything else (an it.each table row, a setup line) could drop a case unseen.
+      const otherRemoved = f.removedLines.filter((l) => !ASSERTION.test(l) && !REMOVABLE.test(l));
+      if (otherRemoved.length && !declared.has(f.b)) violations.push(`${f.b}: lines removed from an existing test file that is not in human_test_updates: ${otherRemoved[0].trim().slice(0, 120)}`);
       if (f.removed > 0 && f.addedLines.some((l) => WEAK_MATCHER.test(l))) violations.push(`${f.b}: no-weakening rule: this existing test file loses lines and gains a weak matcher (toBeDefined/toBeTruthy/toBeFalsy/toBeUndefined/expect.any/expect.anything); use an exact matcher, or a human pushes this change`);
       editedExisting.push(e);
     }

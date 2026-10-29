@@ -14,7 +14,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import {
-  FEEDBACK_CAPS, PKG_OF, condenseFailure, coverageFor, indexResults, totals, touchedSrc, vitest,
+  FEEDBACK_CAPS, PKG_OF, THRESHOLD_MSG, condenseFailure, coverageFor, indexResults, stripAnsi, totals, touchedSrc, vitest,
 } from '../../.claude/skills/verify-tests/scripts/verify.mjs';
 
 export const HEAD_RUNS = 3;
@@ -26,12 +26,22 @@ function parseArgs(argv) {
   return a;
 }
 
-// A run is valid when the command was not killed and wrote a JSON report with test results.
+const reportsFailure = (json) => json.numFailedTests > 0 || json.testResults.some((t) => t.status !== 'passed');
+
+// A coverage-threshold miss: vitest exits non-zero, every test passes, and its output names a threshold.
+export function runThresholdMiss(r) {
+  return Boolean(r?.json && !r.signal && r.status !== 0 && Array.isArray(r.json.testResults) && !reportsFailure(r.json)
+    && THRESHOLD_MSG.test(stripAnsi(`${r.stdout ?? ''}\n${r.stderr ?? ''}`)));
+}
+
+// A run is valid when the command was not killed, wrote a JSON report with test results, and a non-zero
+// exit is explained by a failing test or a coverage-threshold miss.
 export function runProblem(r) {
   if (!r) return 'did not run';
   if (r.signal) return `killed (${r.signal})`;
   if (!r.json) return `wrote no JSON report (exit ${r.status})`;
   if (!Array.isArray(r.json.testResults)) return 'JSON report has no testResults';
+  if (r.status !== 0 && !reportsFailure(r.json) && !runThresholdMiss(r)) return `exited ${r.status} with every test passing and no coverage-threshold message`;
   return null;
 }
 
@@ -82,7 +92,7 @@ export function baseline(args) {
   mkdirSync(work, { recursive: true });
   const installFailures = args['install-failures'] && existsSync(args['install-failures'])
     ? readFileSync(args['install-failures'], 'utf8').split('\n').map((l) => l.trim()).filter(Boolean) : [];
-  const out = { version: 2, packages: {}, pr_induced: [], pre_existing: [], flaky: [], new_in_pr: [], inconclusive: [], head_failing: [], coverage_before: {} };
+  const out = { version: 2, packages: {}, pr_induced: [], pre_existing: [], flaky: [], new_in_pr: [], inconclusive: [], head_failing: [], threshold_miss: [], coverage_before: {} };
   const packages = scope.packages.filter((p) => p === 'backend' || p === 'frontend');
   for (const pkg of packages) {
     const installProblem = installFailures.filter((l) => l.startsWith(`${pkg} `)).join('; ') || null;
@@ -99,6 +109,8 @@ export function baseline(args) {
     const c = classifyPackage({ pkg, base: b ? side(b, base) : null, head: h.map((r) => side(r, head)), installProblem });
     for (const k of ['pr_induced', 'pre_existing', 'flaky', 'new_in_pr', 'head_failing']) out[k].push(...c[k]);
     if (c.inconclusive) out.inconclusive.push(c.inconclusive);
+    // Head run 1 has coverage on: a threshold miss there is open on head without any agent test.
+    else if (runThresholdMiss(h[0])) out.threshold_miss.push(pkg);
     out.packages[pkg] = {
       base: b ? { exit: b.status, signal: b.signal, totals: totals(b.json), ms: b.ms } : null,
       head: h.map((r) => ({ exit: r.status, signal: r.signal, totals: totals(r.json), ms: r.ms })),
@@ -108,7 +120,7 @@ export function baseline(args) {
   }
   writeFileSync(args.out, `${JSON.stringify(out, null, 2)}\n`);
   if (args['pr-induced-md']) writeFileSync(args['pr-induced-md'], prInducedMarkdown(out.pr_induced));
-  console.log(JSON.stringify({ pr_induced: out.pr_induced.length, pre_existing: out.pre_existing.length, flaky: out.flaky.length, new_in_pr: out.new_in_pr.length, inconclusive: out.inconclusive }));
+  console.log(JSON.stringify({ pr_induced: out.pr_induced.length, pre_existing: out.pre_existing.length, flaky: out.flaky.length, new_in_pr: out.new_in_pr.length, threshold_miss: out.threshold_miss, inconclusive: out.inconclusive }));
   return 0;
 }
 

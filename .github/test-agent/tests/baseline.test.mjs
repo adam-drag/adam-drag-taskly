@@ -2,7 +2,7 @@
 // Run with: node --test .github/test-agent/tests/*.test.mjs
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { classifyPackage, prInducedMarkdown, runProblem } from '../baseline.mjs';
+import { classifyPackage, prInducedMarkdown, runProblem, runThresholdMiss } from '../baseline.mjs';
 import { computeVerdict } from '../verdict.mjs';
 
 const T = (status, failure = '') => ({ status, failure });
@@ -43,7 +43,17 @@ test('baseline: a failed install makes the package inconclusive and classifies n
 test('baseline: a missing report or a killed run on either side is inconclusive', () => {
   assert.equal(runProblem({ status: 1, signal: null, json: null }), 'wrote no JSON report (exit 1)');
   assert.equal(runProblem({ status: null, signal: 'SIGTERM', json: { testResults: [] } }), 'killed (SIGTERM)');
-  assert.equal(runProblem({ status: 1, signal: null, json: { testResults: [] } }), null);
+  const failing = { numFailedTests: 1, testResults: [{ status: 'failed' }] };
+  const passing = { numFailedTests: 0, testResults: [{ status: 'passed' }] };
+  assert.equal(runProblem({ status: 1, signal: null, json: failing }), null);
+  assert.equal(runProblem({ status: 0, signal: null, json: passing }), null);
+  // A non-zero exit needs a reason: a failing test or a named coverage threshold.
+  assert.equal(runProblem({ status: 1, signal: null, json: passing, stdout: '', stderr: 'Error: something else' }), 'exited 1 with every test passing and no coverage-threshold message');
+  const threshold = { status: 1, signal: null, json: passing, stdout: '', stderr: 'ERROR: Coverage for lines (90%) does not meet "src/a.ts" threshold (100%)' };
+  assert.equal(runProblem(threshold), null);
+  assert.equal(runThresholdMiss(threshold), true);
+  assert.equal(runThresholdMiss({ ...threshold, json: failing }), false);
+  assert.equal(runThresholdMiss({ ...threshold, signal: 'SIGKILL' }), false);
   const missing = classifyPackage({ pkg: 'backend', base: { problem: 'wrote no JSON report (exit 1)', tests: {} }, head: [ok({ 'a > t': T('failed') }), ok({ 'a > t': T('failed') }), ok({ 'a > t': T('failed') })] });
   assert.match(missing.inconclusive, /merge base suite wrote no JSON report/);
   assert.deepEqual(missing.pr_induced, []);
@@ -82,6 +92,16 @@ test('verdict: a fork PR runs the baseline; failures on head make it a failure',
   assert.equal(v.state, 'failure');
   assert.match(v.headline, /fork PR, generation skipped; pre-existing failure on head: a > t/);
   assert.equal(computeVerdict({ scope }).class, 'infrastructure');
+});
+
+test('verdict: a coverage threshold miss on head fails a fork or no-op run', () => {
+  const baseline = { ...B0, threshold_miss: ['backend'] };
+  const fork = computeVerdict({ scope: { decision: 'skip', skip_kind: 'fork', reason: 'fork PR' }, baseline });
+  assert.equal(fork.state, 'failure');
+  assert.match(fork.headline, /coverage threshold missed on head in backend/);
+  assert.equal(computeVerdict({ scope: scopeGen, baseline, gen: { status: 'no-op' } }).state, 'failure');
+  // With a verify step, verify's own threshold check on the candidate tree decides.
+  assert.equal(computeVerdict({ scope: scopeGen, baseline, gen, verify: verifyOk, publish: published }).state, 'success');
 });
 
 test('verdict: no merge base fails closed with the reason', () => {

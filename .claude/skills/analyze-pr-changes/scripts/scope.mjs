@@ -16,7 +16,10 @@ import { dirname, join, posix, relative, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 export const LIMITS = { maxSrcFiles: 20, maxSrcLines: 800 };
-const SKIP_DIRS = new Set(['node_modules', '.git', 'coverage', 'dist', 'storybook-static', '.vite']);
+// node_modules and .git are skipped at any depth; build output only at the repo root or a package root
+// (backend/coverage, frontend/dist), so a src directory with one of these names is still scanned.
+const SKIP_DIRS = new Set(['node_modules', '.git']);
+const BUILD_DIRS = new Set(['coverage', 'dist', 'storybook-static', '.vite']);
 const SKIP_PREFIXES = ['backend/src/generated/'];
 const TRUSTED_REQUIRED = [
   '.claude/agents/test-writer.md',
@@ -70,7 +73,7 @@ function walk(root) {
       const abs = join(dir, entry.name);
       const rel = relative(root, abs).split('\\').join('/');
       if (entry.isDirectory()) {
-        if (SKIP_DIRS.has(entry.name) || SKIP_PREFIXES.some((p) => `${rel}/`.startsWith(p))) continue;
+        if (SKIP_DIRS.has(entry.name) || (BUILD_DIRS.has(entry.name) && rel.split('/').length <= 2) || SKIP_PREFIXES.some((p) => `${rel}/`.startsWith(p))) continue;
         visit(abs);
       } else if (entry.isSymbolicLink()) {
         out.set(rel, { type: 'symlink', hash: `link:${readlinkSync(abs)}` });

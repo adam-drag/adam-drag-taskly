@@ -8,7 +8,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { main as scopeMain } from '../../../.claude/skills/analyze-pr-changes/scripts/scope.mjs';
-import { verify } from '../../../.claude/skills/verify-tests/scripts/verify.mjs';
+import { indexResults, verify } from '../../../.claude/skills/verify-tests/scripts/verify.mjs';
 import { fetchBotStatus, render } from '../report.mjs';
 
 const git = (cwd, ...args) => {
@@ -131,7 +131,7 @@ let files = args.filter((a) => a !== 'run' && !a.startsWith('-'));
 const isRerun = files.length > 0;
 if (!isRerun) files = fs.readdirSync('tests').filter((f) => f.endsWith('.test.ts')).map((f) => 'tests/' + f);
 const results = files.map((f) => {
-  const failed = f.includes('.probable-bug.');
+  const failed = f.includes('.probable-bug.') || (cfg.failing ?? []).includes(f);
   return { name: path.join(process.cwd(), f), status: failed ? 'failed' : 'passed', message: '', assertionResults: [{ fullName: 't', status: failed ? 'failed' : 'passed', failureMessages: failed ? ['expected 1 to be 2'] : [] }] };
 });
 const failedN = results.filter((r) => r.status === 'failed').length;
@@ -151,14 +151,15 @@ const newFile = (path, lines) => [
   `@@ -0,0 +1,${lines.length} @@`, ...lines.map((l) => `+${l}`), '',
 ].join('\n');
 
-function verifyFixture(fake) {
+function verifyFixture(fake, { existing = [], fixture = false, baseline = null } = {}) {
   const root = mkdtempSync(join(tmpdir(), 'verify-'));
   const dir = join(root, 'work'), files = join(root, 'files'), work = join(root, 'scratch');
   mkdirSync(join(dir, 'backend/tests'), { recursive: true });
   mkdirSync(join(dir, 'backend/node_modules/.bin'), { recursive: true });
   writeFileSync(join(dir, 'backend/package.json'), '{}\n');
   git(dir, 'init', '-q');
-  git(dir, 'add', 'backend/package.json');
+  for (const f of existing) writeFileSync(join(dir, 'backend', f), "it('t', () => {});\n");
+  git(dir, 'add', 'backend/package.json', ...existing.map((f) => `backend/${f}`));
   commit(dir, 'Adam', 'base');
   writeFileSync(join(dir, 'backend/fake.json'), JSON.stringify(fake));
   writeFileSync(join(dir, 'backend/node_modules/.bin/vitest'), FAKE_VITEST);
@@ -169,11 +170,17 @@ function verifyFixture(fake) {
   mkdirSync(join(files, 'backend/tests'), { recursive: true });
   writeFileSync(join(files, good), "it('a', () => {});\n");
   writeFileSync(join(files, pb), "it('b', () => {});\n");
-  writeFileSync(join(root, 'patch.diff'), newFile(good, ["it('a', () => {});"]) + newFile(pb, ["it('b', () => {});"]));
+  let patch = newFile(good, ["it('a', () => {});"]) + newFile(pb, ["it('b', () => {});"]);
+  if (fixture) {
+    writeFileSync(join(files, 'backend/tests/helpers.ts'), 'export const x = 1;\n');
+    patch += newFile('backend/tests/helpers.ts', ['export const x = 1;']);
+  }
+  writeFileSync(join(root, 'patch.diff'), patch);
   writeFileSync(join(root, 'scope.json'), JSON.stringify({ packages: ['backend'], files: [] }));
   writeFileSync(join(root, 'guard.json'), JSON.stringify({ ok: true, violations: [] }));
   writeFileSync(join(root, 'result.json'), JSON.stringify({ probable_bugs: [{ title: 'wrong comparison', test_file: pb }] }));
   const args = { dir, files, work, patch: join(root, 'patch.diff'), scope: join(root, 'scope.json'), guard: join(root, 'guard.json'), result: join(root, 'result.json'), attempt: '1', out: join(root, 'verify.json') };
+  if (baseline) { writeFileSync(join(root, 'baseline.json'), JSON.stringify(baseline)); args.baseline = join(root, 'baseline.json'); }
   const log = console.log;
   console.log = () => {};
   try { verify(args); } finally { console.log = log; }
@@ -206,4 +213,45 @@ test('verify treats a missing coverage summary as infrastructure', () => {
   const v = verifyFixture({ coverage: false });
   assert.ok(v.classes.infrastructure.some((m) => m.includes('coverage-summary.json missing')));
   assert.equal(v.gate.publish, false);
+});
+
+test('verify: a test that already failed on head stays open; a new failure or a changed fixture blocks', () => {
+  const old = 'tests/old.test.ts';
+  const baseline = { head_failing: ['backend/tests/old.test.ts > t'], pr_induced: [], packages: { backend: { head: [{ totals: { tests: 1, passed: 0 } }] } } };
+  const open = verifyFixture({ failing: [old] }, { existing: [old], baseline });
+  assert.equal(open.gate.publish, true, open.gate.reasons.join('; '));
+  assert.deepEqual(open.regressions, []);
+  assert.deepEqual(open.packages.backend.suite_before, { tests: 1, passed: 0 });
+  const regression = verifyFixture({ failing: [old] }, { existing: [old], baseline: { ...baseline, head_failing: [] } });
+  assert.equal(regression.gate.publish, false);
+  assert.deepEqual(regression.regressions, ['backend/tests/old.test.ts > t']);
+  assert.ok(regression.classes.test_failure.includes('suite failure: backend/tests/old.test.ts'));
+  const fixture = verifyFixture({ failing: [old] }, { existing: [old], baseline, fixture: true });
+  assert.equal(fixture.gate.publish, false);
+  assert.ok(fixture.classes.test_failure.includes('suite failure: backend/tests/old.test.ts'), fixture.classes.test_failure.join('; '));
+});
+
+test('indexResults keeps a failed file without a failed assertion as one failed entry', () => {
+  const json = { testResults: [{ name: '/r/backend/tests/a.test.ts', status: 'failed', message: 'afterAll hook failed', assertionResults: [{ fullName: 't', status: 'passed', failureMessages: [] }] }] };
+  const { tests, files } = indexResults(json, '/r');
+  assert.equal(files['backend/tests/a.test.ts'].status, 'failed');
+  assert.equal(tests['backend/tests/a.test.ts > (file failed to run)'].status, 'failed');
+  assert.equal(tests['backend/tests/a.test.ts > t'].status, 'passed');
+});
+
+test('scope scans src directories named like build output, but not package build output', () => {
+  const root = mkdtempSync(join(tmpdir(), 'scope-walk-'));
+  const base = join(root, 'base'), head = join(root, 'head');
+  for (const d of [base, head]) mkdirSync(join(d, 'frontend/src/features/coverage'), { recursive: true });
+  mkdirSync(join(head, 'frontend/coverage'), { recursive: true });
+  writeFileSync(join(base, 'frontend/src/features/coverage/meter.ts'), 'export const a = 1;\n');
+  writeFileSync(join(head, 'frontend/src/features/coverage/meter.ts'), 'export const a = 2;\n');
+  writeFileSync(join(head, 'frontend/coverage/lcov.info'), 'x\n');
+  const out = join(root, 'out');
+  const log = console.log;
+  console.log = () => {};
+  try { assert.equal(scopeMain(['--base', base, '--head', head, '--out', out]), 0); } finally { console.log = log; }
+  const scope = JSON.parse(readFileSync(join(out, 'scope.json'), 'utf8'));
+  assert.deepEqual(scope.files.map((f) => f.path), ['frontend/src/features/coverage/meter.ts']);
+  assert.equal(scope.decision, 'generate');
 });

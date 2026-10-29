@@ -20,17 +20,18 @@ const LABEL = {
   threshold_miss: 'coverage threshold',
 };
 
-// Failing tests on the PR head that the baseline found (plan 2.7), as verdict notes.
-// withPrInduced: also count PR-induced failures (when no verify step could resolve them).
-export function baselineOpen(baseline, { withPrInduced }) {
+// What the baseline found open on the PR head (plan 2.7), as verdict notes.
+// verified: false when no verify step ran (fork, agent no-op). Then PR-induced failures and a coverage
+// threshold miss on head also count; with a verify step, verify reports those for the candidate tree.
+export function baselineOpen(baseline, { verified }) {
   if (!baseline) return [];
-  const list = [
-    ...(withPrInduced ? (baseline.pr_induced ?? []).map((t) => `PR-induced failure on head: ${t.id}`) : []),
+  return [
+    ...(verified ? [] : (baseline.pr_induced ?? []).map((t) => `PR-induced failure on head: ${t.id}`)),
     ...(baseline.pre_existing ?? []).map((t) => `pre-existing failure on head: ${t.id}`),
     ...(baseline.flaky ?? []).map((t) => `flaky on head (${t.head_runs}): ${t.id}`),
     ...(baseline.new_in_pr ?? []).map((t) => `new test failing on head: ${t.id}`),
+    ...(verified ? [] : (baseline.threshold_miss ?? []).map((p) => `coverage threshold missed on head in ${p}`)),
   ];
-  return list;
 }
 
 // inputs: { scope, scopeJob, baseline, baselineJob, gen, genJob, verify, verifyJob, publish, publishJob,
@@ -68,7 +69,7 @@ export function computeVerdict(i) {
     notes.push(...i.baseline.inconclusive.map((m) => `baseline inconclusive: ${m}`));
     return fail('infrastructure', 'baseline', i.baseline.inconclusive[0]);
   }
-  const withoutVerify = baselineOpen(i.baseline, { withPrInduced: true });
+  const withoutVerify = baselineOpen(i.baseline, { verified: false });
   if (fork) {
     if (withoutVerify.length) { notes.push(...withoutVerify); return fail('open_failure', null, `fork PR, generation skipped; ${withoutVerify[0]}`); }
     return ok('skip', `skipped by policy (${i.scope.reason}); the baseline found no failing test on head`);
@@ -90,7 +91,7 @@ export function computeVerdict(i) {
   if (!i.verify) return fail('infrastructure', 'verify', `verify job ${i.verifyJob ?? 'did not run'} and wrote no verify.json`);
   const classes = { ...(i.verify.classes ?? {}) };
   // PR-induced failures are tracked by verify (pr_induced_status); the other baseline classes stay open.
-  classes.open_failure = [...(classes.open_failure ?? []), ...baselineOpen(i.baseline, { withPrInduced: false })];
+  classes.open_failure = [...(classes.open_failure ?? []), ...baselineOpen(i.baseline, { verified: true })];
   const open = ORDER.filter((c) => (classes[c] ?? []).length);
   for (const c of open) notes.push(...classes[c].map((m) => `${LABEL[c]}: ${m}`));
 

@@ -132,6 +132,19 @@ test('guard refuses a declared human-test update that drops a test case or an ex
   assert.deepEqual(ok.edited_existing[0].removed_lines, ["it('a', () => { expect(f()).toBe(3); });"]);
 });
 
+test('guard refuses an undeclared edit that drops an it.each row, and accepts an import edit', () => {
+  const p = 'backend/tests/x.test.ts';
+  const before = "it.each([\n  [1, 2],\n  [2, 4],\n])('doubles %i', (a, b) => { expect(a * 2).toBe(b); });\n";
+  const after = "it.each([\n  [1, 2],\n])('doubles %i', (a, b) => { expect(a * 2).toBe(b); });\n";
+  const dirs = existingFile(before, after);
+  const patch = hunkPatch([['@@ -1,4 +1,3 @@', ' it.each([', '   [1, 2],', '-  [2, 4],', " ])('doubles %i', (a, b) => { expect(a * 2).toBe(b); });"]]);
+  const r = checkPatch(patch, dirs.before, dirs.after);
+  assert.ok(r.violations.some((v) => v.includes('lines removed from an existing test file that is not in human_test_updates: [2, 4],')), r.violations.join('; '));
+  const imp = existingFile("import { expect, it } from 'vitest';\nit('a', () => { expect(1).toBe(1); });\n", "import { expect, it, vi } from 'vitest';\nit('a', () => { expect(1).toBe(1); });\nit('b', () => { expect(vi.fn()).not.toHaveBeenCalled(); });\n");
+  const ok = checkPatch(hunkPatch([['@@ -1,2 +1,3 @@', "-import { expect, it } from 'vitest';", "+import { expect, it, vi } from 'vitest';", " it('a', () => { expect(1).toBe(1); });", "+it('b', () => { expect(vi.fn()).not.toHaveBeenCalled(); });"]]), imp.before, imp.after);
+  assert.equal(ok.ok, true, ok.violations.join('; '));
+});
+
 test('guard accepts new tests appended to an existing file, weak matchers included', () => {
   const old = "it('a', () => { expect(f()).toBe(3); });";
   const add = "it('b', () => { expect(g()).toBeUndefined(); });";

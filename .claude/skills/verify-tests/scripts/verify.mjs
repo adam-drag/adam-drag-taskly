@@ -56,7 +56,9 @@ export function indexResults(json, root) {
     const file = relative(root, tr.name).split('\\').join('/');
     const failed = tr.status !== 'passed' || (tr.assertionResults ?? []).some((a) => a.status === 'failed');
     files[file] = { status: failed ? 'failed' : 'passed', message: stripAnsi(tr.message || ''), tests: (tr.assertionResults ?? []).length };
-    if (!(tr.assertionResults ?? []).length && tr.status !== 'passed') tests[`${file} > (file failed to run)`] = { status: 'failed', failure: stripAnsi(tr.message || '').split(`${root}/`).join('') };
+    // A file that failed without a failed assertion (an import error, a hook error, a failure after the
+    // tests) gets one synthetic entry, so the per-test view never loses a failed file.
+    if (tr.status !== 'passed' && !(tr.assertionResults ?? []).some((a) => a.status === 'failed')) tests[`${file} > (file failed to run)`] = { status: 'failed', failure: stripAnsi(tr.message || '').split(`${root}/`).join('') };
     for (const a of tr.assertionResults ?? []) {
       tests[`${file} > ${a.fullName}`] = { status: a.status, failure: stripAnsi((a.failureMessages ?? []).join('\n')).split(`${root}/`).join('') };
     }
@@ -130,7 +132,7 @@ export function candidateTreeSha(repo, headSha, candidates, indexFile) {
   return git(repo, ['write-tree'], { env });
 }
 
-const THRESHOLD_MSG = /Coverage for [a-z]+ \([\d.]+%\) does not meet/i;
+export const THRESHOLD_MSG = /Coverage for [a-z]+ \([\d.]+%\) does not meet/i;
 
 // verify mode. --dir is a clean checkout of the tested head (a git work tree). --files holds the agent's
 // after-content per patch path (from the generate artifact). Probable-bug files are split off before any
@@ -194,6 +196,7 @@ export function verify(args) {
     const covDir = join(work, `coverage-after-${pkg}`);
     const full = vitest(pkgDir, join(work, `suite-${pkg}.json`), { coverageDir: covDir, log: join(work, `suite-${pkg}.log`) });
     if (!full.json) infra.push(`${pkg}: full suite wrote no JSON report (exit ${full.status}${full.signal ? `, signal ${full.signal}` : ''})`);
+    else if (full.signal) infra.push(`${pkg}: full suite was killed (${full.signal})`);
     const fi = indexResults(full.json, dir);
     index[pkg] = fi;
     const failedFiles = Object.entries(fi.files).filter(([, v]) => v.status !== 'passed').map(([k]) => k);
@@ -216,7 +219,7 @@ export function verify(args) {
     out.packages[pkg] = {
       tsc: { ok: t.ok, exit: t.exit, errors: t.errors.length, ms: t.ms },
       suite: { exit: full.status, totals: totals(full.json), ms: full.ms, failed_files: failedFiles },
-      suite_before: baselineJson?.packages?.[pkg]?.head?.totals ?? null,
+      suite_before: baselineJson?.packages?.[pkg]?.head?.[0]?.totals ?? null,
       threshold_miss: thresholdMiss,
       changed_test_files: changed,
     };
@@ -279,6 +282,9 @@ export function verify(args) {
       else regressions.push(id);
     }
   }
+  // A changed fixture can affect any test, so with a fixture in the candidate every failure blocks (2.8).
+  const fixtureChanged = candidate.some((c) => !isRunnableTest(c.path));
+  if (fixtureChanged) { regressions.push(...alreadyFailing); alreadyFailing.length = 0; }
   const suiteFailures = baselineJson ? [...new Set(regressions.map((id) => id.split(' > ')[0]))] : Object.values(out.packages).flatMap((v) => v.suite.failed_files);
   out.regressions = regressions;
   const guardOk = guard ? guard.ok === true : false;
@@ -310,6 +316,14 @@ export function verify(args) {
       for (const e of fileTsc.get(f.path) ?? []) body += `tsc ${e.code} line ${e.line}: ${e.message}\n`;
       if (fi?.files[f.path]?.message) body += `file error: ${fi.files[f.path].message.slice(0, 600)}\n`;
       for (const [id, t] of Object.entries(fi?.tests ?? {})) if (id.startsWith(`${f.path} > `) && t.status === 'failed') body += `- ${id.slice(f.path.length + 3)}\n${condenseFailure(t.failure, f.path)}\n`;
+      parts.push(body.length > FEEDBACK_CAPS.perFile ? `${body.slice(0, FEEDBACK_CAPS.perFile)}\n[truncated]\n` : body);
+    }
+    // tsc errors in files outside the failing test files (a fixture, a test that imports it).
+    const shown = new Set(badFiles.map((f) => f.path));
+    const otherTsc = [...fileTsc.entries()].filter(([file]) => !shown.has(file));
+    if (otherTsc.length) {
+      let body = '## tsc errors in other files\n';
+      for (const [file, errs] of otherTsc) for (const e of errs) body += `${file} tsc ${e.code} line ${e.line}: ${e.message}\n`;
       parts.push(body.length > FEEDBACK_CAPS.perFile ? `${body.slice(0, FEEDBACK_CAPS.perFile)}\n[truncated]\n` : body);
     }
     for (const p of out.pr_induced_status.filter((s) => s.open)) {
