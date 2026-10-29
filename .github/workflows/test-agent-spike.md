@@ -16,6 +16,7 @@ network:
   allowed:
     - defaults
     - node
+    - binaries.prisma.sh
 tools:
   edit:
   bash:
@@ -39,6 +40,7 @@ tools:
 safe-outputs:
   push-to-pull-request-branch:
     allowed-files:
+      - "backend/tests/*.test.ts"
       - "backend/tests/**/*.test.ts"
       - "frontend/src/**/*.test.ts"
       - "frontend/src/**/*.test.tsx"
