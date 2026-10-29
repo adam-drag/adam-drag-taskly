@@ -4,7 +4,7 @@ import { fileURLToPath } from 'node:url';
 dotenv.config({ path: fileURLToPath(new URL('../../../.env', import.meta.url)), quiet: true });
 
 export function resolveDatabaseUrl(override?: string): string {
-  const explicit = override || process.env.DATABASE_URL;
+  const explicit = (override || process.env.DATABASE_URL)?.trim();
   if (explicit) return explicit.replace(/^postgresql\+psycopg:/, 'postgresql:');
   const required = ['POSTGRES_USER', 'POSTGRES_PASSWORD', 'POSTGRES_HOST', 'DB_PORT', 'POSTGRES_DB'];
   for (const name of required) {
