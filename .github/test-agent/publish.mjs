@@ -4,7 +4,7 @@
 // through the GitHub Git Data API, or nothing.
 //
 //   node publish.mjs --verify <verify.json> --candidate <dir> --patch <agent patch> --scope <scope.json>
-//                    --baseline <baseline.json> --gen <gen.json> --out <publish.json>
+//                    --baseline <baseline.json> --gen <gen.json> --attempt <n> --out <publish.json>
 // env: GITHUB_TOKEN, GITHUB_REPOSITORY, PR_NUMBER, HEAD_REF, TESTED_SHA, RUN_URL
 import { createHash } from 'node:crypto';
 import { existsSync, lstatSync, readFileSync, writeFileSync } from 'node:fs';
@@ -152,7 +152,7 @@ function parseArgs(argv) {
 export async function main(argv) {
   const a = parseArgs(argv);
   const env = process.env;
-  const out = { status: 'refused' };
+  const out = { status: 'refused', attempt: Number(a.attempt || 1) };
   try {
     const verify = readJson(a.verify);
     const patchText = readFileSync(a.patch, 'utf8');

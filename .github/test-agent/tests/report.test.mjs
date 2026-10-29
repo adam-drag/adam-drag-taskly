@@ -87,6 +87,17 @@ test('loadInputs takes attempt 2 when verify-1 asked for it, and names a missing
   assert.equal(full.metas.length, 2);
   assert.equal(full.verify.attempt, 2);
   assert.equal(full.verify1.trigger_attempt_2, true);
+  // Attempt 2 gave no publishable tree, so publish used attempt 1: the report follows publish.json.
+  put('verify-2/verify2.json', { ...verify(), gate: { publish: false, reasons: ['tsc fails in backend'] } });
+  put('verify-1/verify1.json', { ...verify({ attempt: 1 }), trigger_attempt_2: true, classes: { open_failure: ['PR-induced failure still open: x'] } });
+  put('publish/publish.json', { status: 'published', attempt: 1, commit_sha: 'd'.repeat(40) });
+  const fallback = loadInputs(dir, env);
+  assert.equal(fallback.attempt, 1);
+  assert.equal(fallback.verify.attempt, 1);
+  const r = render(fallback);
+  assert.equal(r.verdict.published, true);
+  assert.ok(r.body.includes('attempt 2 gave no publishable tree: verify-2 gate closed (tsc fails in backend); the verified attempt-1 tree was published'));
+  assert.ok(r.body.includes('final attempt 1 of 2'));
 });
 
 test('gen-status: order of the generate outcomes', () => {

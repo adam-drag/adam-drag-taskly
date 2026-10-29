@@ -359,18 +359,18 @@ jobs:
 
   publish:
     needs: [scope, baseline, generate, verify, generate2, verify2]
-    # The final attempt decides: verify-1 when no attempt 2 was asked for, else verify-2.
+    # Publishes the verified tree of attempt 2 when its gate holds, else the verified tree of attempt 1 when
+    # its gate holds (attempt 2 can also run only for an open PR-induced failure, which does not block).
     if: >-
       !cancelled() && github.event.pull_request.head.repo.full_name == github.repository &&
-      ((needs.verify.outputs.publish == 'true' && needs.verify.outputs.attempt2 != 'true') ||
-      needs.verify2.outputs.publish == 'true')
+      (needs.verify.outputs.publish == 'true' || needs.verify2.outputs.publish == 'true')
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
       contents: write
       statuses: write
     env:
-      FINAL: ${{ needs.verify.outputs.attempt2 == 'true' && '2' || '1' }}
+      FINAL: ${{ needs.verify2.outputs.publish == 'true' && '2' || '1' }}
     steps:
       - name: Check out the base commit (trusted)
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -388,11 +388,11 @@ jobs:
           path: baseline
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          name: gen-${{ needs.verify.outputs.attempt2 == 'true' && '2' || '1' }}
+          name: gen-${{ needs.verify2.outputs.publish == 'true' && '2' || '1' }}
           path: gen
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          name: verify-${{ needs.verify.outputs.attempt2 == 'true' && '2' || '1' }}
+          name: verify-${{ needs.verify2.outputs.publish == 'true' && '2' || '1' }}
           path: verify
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
@@ -408,7 +408,8 @@ jobs:
           mkdir -p out
           # Candidate bytes come from the generate artifact (a job that never ran PR code), not from verify.
           node trusted/.github/test-agent/publish.mjs --verify "verify/verify$FINAL.json" --candidate "gen/files$FINAL" \
-            --patch "gen/patch$FINAL.diff" --scope ctx/scope.json --baseline baseline/baseline.json --gen gen/gen.json --out out/publish.json
+            --patch "gen/patch$FINAL.diff" --scope ctx/scope.json --baseline baseline/baseline.json --gen gen/gen.json \
+            --attempt "$FINAL" --out out/publish.json
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
