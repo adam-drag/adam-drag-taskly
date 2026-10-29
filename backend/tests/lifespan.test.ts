@@ -164,7 +164,7 @@ describe('start', () => {
     vi.mocked(createDatabase).mockReturnValue(client);
 
     await expect(start()).rejects.toBeInstanceOf(Error);
-    // Start-up got past connect and initialize and failed at listen: no "listening" message, database disconnected.
+    // Start-up got past connect and initialize and failed before it logged the listening message; the database is disconnected.
     expect(double.$connect).toHaveBeenCalledTimes(1);
     expect(initialize).toHaveBeenCalledTimes(1);
     expect(console.log).not.toHaveBeenCalled();
