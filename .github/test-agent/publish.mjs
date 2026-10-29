@@ -4,7 +4,7 @@
 // through the GitHub Git Data API, or nothing.
 //
 //   node publish.mjs --verify <verify.json> --candidate <dir> --patch <agent patch> --scope <scope.json>
-//                    --gen <gen.json> --out <publish.json>
+//                    --baseline <baseline.json> --gen <gen.json> --out <publish.json>
 // env: GITHUB_TOKEN, GITHUB_REPOSITORY, PR_NUMBER, HEAD_REF, TESTED_SHA, RUN_URL
 import { createHash } from 'node:crypto';
 import { existsSync, lstatSync, readFileSync, writeFileSync } from 'node:fs';
@@ -78,8 +78,9 @@ export function makeApi({ token, repo, fetchImpl = fetch }) {
 
 const refPath = (branch) => `/git/refs/heads/${branch.split('/').map(encodeURIComponent).join('/')}`;
 
-export async function publish({ api, verify, files, testedSha, branch, prNumber, runUrl, verdictInputs }) {
-  const out = { status: 'error', tested_sha: testedSha, verified_tree_sha: verify.candidate_tree_sha, steps: [] };
+// out is filled in place, so a caller that catches a throw still has every step recorded so far.
+export async function publish({ api, verify, files, testedSha, branch, prNumber, runUrl, verdictInputs, out = {} }) {
+  Object.assign(out, { status: 'error', tested_sha: testedSha, verified_tree_sha: verify.candidate_tree_sha, steps: [] });
   const step = (name, data) => out.steps.push({ name, ...data });
 
   // 1. Stale-head pre-check.
@@ -111,10 +112,21 @@ export async function publish({ api, verify, files, testedSha, branch, prNumber,
   out.commit_sha = commit.json.sha;
   step('commit', { sha: commit.json.sha, tree: commit.json.tree?.sha, parents: commit.json.parents?.map((p) => p.sha), author: commit.json.author?.name, message: commit.json.message });
 
-  // 4. Fast-forward-only ref update. A moved head makes GitHub refuse it.
-  const ref = await api('PATCH', refPath(branch), { sha: commit.json.sha, force: false });
-  out.ref_update = { status: ref.status, message: ref.json?.message ?? null };
-  step('ref-update', out.ref_update);
+  // 4. Fast-forward-only ref update. A moved head makes GitHub refuse it. If the request throws (the
+  // response is lost), read the ref back: it either points at our commit (published) or it does not.
+  let ref;
+  try { ref = await api('PATCH', refPath(branch), { sha: commit.json.sha, force: false }); }
+  catch (e) {
+    const lost = String(e?.message ?? e).slice(0, 200);
+    let live = null;
+    try { live = await api('GET', refPath(branch).replace('/git/refs/', '/git/ref/')); } catch { live = null; }
+    const liveSha = live?.status === 200 ? live.json?.object?.sha : null;
+    out.ref_update = { status: 0, message: `request failed (${lost}); ref read back: ${liveSha ?? 'unknown'}` };
+    step('ref-update', out.ref_update);
+    if (liveSha !== commit.json.sha) { out.reason = `ref update: ${out.ref_update.message}; commit ${commit.json.sha} is not on the branch`; return out; }
+    ref = { status: 200, json: null };
+  }
+  if (!out.ref_update) { out.ref_update = { status: ref.status, message: ref.json?.message ?? null }; step('ref-update', out.ref_update); }
   if (ref.status === 422) { out.status = 'superseded'; out.reason = `ref update refused: ${ref.json?.message ?? 'not a fast forward'}`; return out; }
   if (ref.status !== 200) { out.reason = `ref update: HTTP ${ref.status}`; return out; }
   out.status = 'published';
@@ -149,12 +161,13 @@ export async function main(argv) {
     if (reasons.length) {
       Object.assign(out, { reason: reasons.join('; '), checks: reasons });
     } else {
-      const verdictInputs = { scope: readJson(a.scope), gen: readJson(a.gen), verify };
+      const verdictInputs = { scope: readJson(a.scope), baseline: readJson(a.baseline), gen: readJson(a.gen), verify };
       const api = makeApi({ token: env.GITHUB_TOKEN, repo: env.GITHUB_REPOSITORY });
-      Object.assign(out, await publish({ api, verify, files, testedSha, branch: env.HEAD_REF, prNumber: env.PR_NUMBER, runUrl: env.RUN_URL, verdictInputs }));
+      await publish({ api, verify, files, testedSha, branch: env.HEAD_REF, prNumber: env.PR_NUMBER, runUrl: env.RUN_URL, verdictInputs, out });
     }
   } catch (e) {
-    Object.assign(out, { status: 'error', reason: `publish crashed: ${String(e?.message ?? e).slice(0, 300)}` });
+    // Keep what publish recorded (commit_sha, steps); only the status and reason change.
+    Object.assign(out, { status: out.status === 'published' ? 'published' : 'error', reason: `publish crashed: ${String(e?.message ?? e).slice(0, 300)}` });
   }
   writeFileSync(a.out, `${JSON.stringify(out, null, 2)}\n`);
   console.log(JSON.stringify({ status: out.status, reason: out.reason ?? null, commit: out.commit_sha ?? null, tree: out.github_tree_sha ?? null, ref_update: out.ref_update ?? null, commit_status: out.commit_status ?? null }));

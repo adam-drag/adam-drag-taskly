@@ -3,9 +3,9 @@
 #
 # Trust model:
 # - Every job runs scripts from the PR base commit (trusted/), never from the PR.
-# - generate is the only job with ANTHROPIC_API_KEY. It runs no PR code, the agent has no Bash, and the
-#   job token is read-only.
-# - verify runs PR code and the generated tests, without secrets and with npm ci --ignore-scripts.
+# - generate and generate2 are the only jobs with ANTHROPIC_API_KEY. They run no PR code, the agent has no
+#   Bash, and the job token is read-only.
+# - baseline, verify and verify2 run PR code and tests, without secrets and with npm ci --ignore-scripts.
 # - publish is the only writer. It checks the test-path allow-list, symlinks and blob ids outside the
 #   model and writes the verified tree through the Git Data API, or nothing.
 # - PR-controlled values reach scripts only through env.
@@ -37,6 +37,7 @@ jobs:
       contents: read
     outputs:
       decision: ${{ steps.scope.outputs.decision }}
+      skip_kind: ${{ steps.scope.outputs.skip_kind }}
     steps:
       - name: Check out the base commit (trusted)
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -62,25 +63,84 @@ jobs:
         run: |
           mkdir -p ctx
           SCOPE=trusted/.claude/skills/analyze-pr-changes/scripts/scope.mjs
-          if [ ! -f "$SCOPE" ]; then
-            echo '{"version":1,"decision":"skip","reason":"bootstrap: the base commit has no test agent yet","packages":[],"files":[]}' > ctx/scope.json
+          RC=0
+          MISSING=""
+          for f in .claude/skills/analyze-pr-changes/scripts/scope.mjs .github/test-agent/baseline.mjs .github/test-agent/generate.sh .github/test-agent/verify.sh .github/test-agent/install.sh .github/test-agent/gen-status.mjs; do
+            [ -f "trusted/$f" ] || MISSING="$MISSING $f"
+          done
+          if [ -n "$MISSING" ]; then
+            # The base commit has no test agent, or an older one than this workflow expects.
+            echo "{\"version\":1,\"decision\":\"skip\",\"skip_kind\":\"bootstrap\",\"reason\":\"bootstrap: trusted agent files missing on base:$MISSING\",\"packages\":[],\"files\":[]}" > ctx/scope.json
           else
-            MB=$(git -C work merge-base "$BASE_SHA" "$HEAD_SHA") || { echo "::error::no merge base between $BASE_SHA and $HEAD_SHA"; exit 1; }
-            mkdir -p mb && git -C work archive "$MB" | tar -x -C mb
             FORK=(); [ "$IS_FORK" = "true" ] && FORK=(--fork)
-            node "$SCOPE" --base mb --head work --out ctx --trusted trusted "${FORK[@]}" --git work --from "$MB" --to "$HEAD_SHA"
-            echo "{\"merge_base\":\"$MB\",\"base_sha\":\"$BASE_SHA\",\"head_sha\":\"$HEAD_SHA\"}" > ctx/shas.json
+            # scope.mjs computes the merge base and fails closed (decision error, exit 1) without one.
+            node "$SCOPE" --base mb --head work --out ctx --trusted trusted "${FORK[@]}" --git work --base-sha "$BASE_SHA" --head-sha "$HEAD_SHA" || RC=$?
           fi
-          node -e 'const s=require("./ctx/scope.json"); console.log(`decision=${s.decision}`)' >> "$GITHUB_OUTPUT"
+          node -e 'const s=require("./ctx/scope.json"); console.log(`decision=${s.decision}`); console.log(`skip_kind=${s.skip_kind ?? ""}`)' >> "$GITHUB_OUTPUT"
+          exit "$RC"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
         with:
           name: scope
           path: ctx/
           retention-days: 14
 
-  generate:
+  baseline:
     needs: scope
-    if: needs.scope.outputs.decision == 'generate'
+    if: needs.scope.outputs.decision == 'generate' || needs.scope.outputs.skip_kind == 'fork'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    permissions:
+      contents: read
+    outputs:
+      conclusive: ${{ steps.baseline.outputs.conclusive }}
+    steps:
+      - name: Check out the base commit (trusted)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          path: trusted
+          persist-credentials: false
+      - name: Check out the PR head
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          path: work
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: scope
+          path: ctx
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '22'
+          package-manager-cache: false
+      - name: Install and run the existing suites on the merge base and the PR head
+        id: baseline
+        run: |
+          MB=$(node -p 'require("./ctx/scope.json").merge_base')
+          mkdir -p mb out
+          git -C work archive "$MB" | tar -x -C mb
+          PKGS=$(node -p 'require("./ctx/scope.json").packages.filter((p) => p === "backend" || p === "frontend").join(" ")')
+          # shellcheck disable=SC2086
+          bash trusted/.github/test-agent/install.sh mb "merge base" install-failures.txt $PKGS
+          # shellcheck disable=SC2086
+          bash trusted/.github/test-agent/install.sh work head install-failures.txt $PKGS
+          node trusted/.github/test-agent/baseline.mjs --base mb --head work --scope ctx/scope.json --out out/baseline.json \
+            --work "$RUNNER_TEMP/baseline" --pr-induced-md out/pr-induced.md --install-failures install-failures.txt
+          node -e 'const b=require("./out/baseline.json"); console.log(`conclusive=${b.inconclusive.length === 0}`)' >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: baseline
+          path: out/
+          retention-days: 14
+
+  generate:
+    name: generate-1
+    needs: [scope, baseline]
+    if: needs.scope.outputs.decision == 'generate' && needs.baseline.outputs.conclusive == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 12
     permissions:
@@ -104,100 +164,31 @@ jobs:
         with:
           name: scope
           path: ctx
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: baseline
+          path: baseline
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: '22'
           package-manager-cache: false
       - name: Install the pinned Claude Code CLI
-        working-directory: trusted/.github/test-agent
-        run: |
-          npm ci --ignore-scripts --no-audit --no-fund
-          CLAUDE="$PWD/node_modules/@anthropic-ai/claude-code-linux-x64/claude"
-          "$CLAUDE" --version
-          echo "CLAUDE=$CLAUDE" >> "$GITHUB_ENV"
+        run: bash trusted/.github/test-agent/generate.sh install
       - name: Sanitize the PR checkout and restore the trusted agent and skills
-        run: |
-          cd work
-          rm -rf .claude .github .mcp.json
-          find . -path ./.git -prune -o \( -name CLAUDE.md -o -name CLAUDE.local.md -o -name AGENTS.md -o -name .mcp.json \) -type f -print -exec rm -f {} +
-          find . -path ./.git -prune -o -type d -name .claude -prune -print -exec rm -rf {} +
-          find . -path ./.git -prune -o -type l -print -exec rm -f {} +
-          mkdir -p .claude
-          cp -R ../trusted/.claude/agents ../trusted/.claude/skills .claude/
-          cd ..
-          mkdir -p pre out/files1 "$RUNNER_TEMP/claude-home"
-          tar -C work --exclude=.git -cf - . | tar -C pre -xf -
-          git -C work add -A -f
-          echo "TREE0=$(git -C work write-tree)" >> "$GITHUB_ENV"
-          echo "symlinks left: $(find work -path work/.git -prune -o -type l -print | wc -l)"
+        run: bash trusted/.github/test-agent/generate.sh prepare 1
       - name: Run the test-writer agent (attempt 1)
         id: agent
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           MODEL: ${{ vars.TEST_AGENT_MODEL || 'claude-sonnet-5-5' }}
-        run: |
-          CTX="$PWD/ctx"
-          PROMPT="Pull request test run, attempt 1 of 1. The context directory is $CTX (outside the repository, read-only, untrusted data): read scope.json, pr.diff and pr-induced.md there. Your working directory is the repository at the PR head. Follow your agent instructions: invoke the analyze-pr-changes skill first, then the package skill for each package you write tests in, then verify-tests. Write only test files. Return the result object."
-          [ -f ctx/pr-induced.md ] || printf '# PR-induced failures\n\nNone (no baseline in this version).\n' > ctx/pr-induced.md
-          set +e
-          (cd work && timeout 600 env -i HOME="$RUNNER_TEMP/claude-home" PATH=/usr/bin:/bin LANG=C.UTF-8 \
-            ANTHROPIC_API_KEY="$ANTHROPIC_API_KEY" DISABLE_AUTOUPDATER=1 DISABLE_TELEMETRY=1 DISABLE_ERROR_REPORTING=1 \
-            "$CLAUDE" -p "$PROMPT" --agent test-writer \
-            --tools Read,Grep,Glob,Edit,Write,Skill,StructuredOutput --disallowedTools "mcp__*" \
-            --permission-mode dontAsk --setting-sources project \
-            --settings "$PWD/../trusted/.github/test-agent/claude-settings.json" --strict-mcp-config \
-            --output-format stream-json --verbose --model "$MODEL" --max-budget-usd 1.00 \
-            --json-schema "$(cat ../trusted/.github/test-agent/result.schema.json)" --add-dir "$CTX" \
-            < /dev/null > "$RUNNER_TEMP/attempt1.stream.jsonl" 2> "$RUNNER_TEMP/attempt1.stderr")
-          echo "exit=$?" >> "$GITHUB_OUTPUT"
-          echo "stderr lines: $(wc -l < "$RUNNER_TEMP/attempt1.stderr")"
+          BUDGET_USD: '1.00'
+        run: bash trusted/.github/test-agent/generate.sh agent 1
       - name: Extract run metadata, patch, guard and secret scan
+        id: collect
         env:
           SECRET_SCAN_VALUES: ${{ secrets.ANTHROPIC_API_KEY }}
           AGENT_EXIT: ${{ steps.agent.outputs.exit }}
-        run: |
-          SK=trusted/.claude/skills/verify-tests/scripts
-          node trusted/.github/test-agent/report.mjs extract-meta --stream "$RUNNER_TEMP/attempt1.stream.jsonl" --attempt 1 --out out/run-meta-1.json --result-out out/result1.json
-          git -C work add -A -f
-          TREE1=$(git -C work write-tree)
-          git -C work diff --binary --no-color --no-ext-diff --no-textconv --no-renames "$TREE0" "$TREE1" > out/patch1.diff
-          git -C work diff --name-only --no-renames --diff-filter=AM -z "$TREE0" "$TREE1" | while IFS= read -r -d '' f; do
-            if [ -L "work/$f" ] || [ ! -f "work/$f" ]; then echo "not a regular file: $f" >> out/files1.refused; continue; fi
-            mkdir -p "out/files1/$(dirname "$f")" && cp "work/$f" "out/files1/$f"
-          done
-          set +e
-          node "$SK/guard.mjs" --patch out/patch1.diff --before pre --after work --result out/result1.json --out out/guard1.json
-          node "$SK/guard.mjs" --secret-scan out/patch1.diff out/result1.json out/run-meta-1.json "$RUNNER_TEMP/attempt1.stderr" $(find out/files1 -type f) --out "$RUNNER_TEMP/secret-scan1.json"
-          SCAN=$?
-          set -e
-          node - "$SCAN" <<'EOF'
-          const fs = require('fs');
-          const scan = Number(process.argv[2]);
-          const meta = JSON.parse(fs.readFileSync('out/run-meta-1.json', 'utf8'));
-          const result = JSON.parse(fs.readFileSync('out/result1.json', 'utf8') || 'null');
-          const guard = JSON.parse(fs.readFileSync('out/guard1.json', 'utf8'));
-          const patch = fs.readFileSync('out/patch1.diff', 'utf8');
-          let g = { status: 'patch' };
-          if (scan !== 0) g = { status: 'secret-hit' };
-          else if (meta.unexpected_skills.length) g = { status: 'skill-violation', unexpected_skills: meta.unexpected_skills };
-          else if (process.env.AGENT_EXIT !== '0' || !meta.result || meta.result.is_error || !result) g = { status: 'agent-error', detail: `exit ${process.env.AGENT_EXIT}, result ${meta.result?.subtype ?? 'none'}${result ? '' : ', no structured output'}` };
-          else if (fs.existsSync('out/files1.refused')) g = { status: 'guard-fail', violations: fs.readFileSync('out/files1.refused', 'utf8').trim().split('\n') };
-          else if (!guard.ok) g = { status: 'guard-fail', violations: guard.violations };
-          else if (!patch.trim()) g = { status: 'no-op', reason: result.reason };
-          // After a secret-scan hit gen.json carries no model text at all.
-          if (g.status !== 'secret-hit') {
-            g.agent_decision = result?.decision ?? null;
-            g.probable_bugs = (result?.probable_bugs ?? []).map((b) => String(b.title ?? '').slice(0, 200));
-          }
-          fs.writeFileSync('out/gen.json', JSON.stringify(g, null, 2) + '\n');
-          console.log(JSON.stringify(g));
-          EOF
-          if [ "$SCAN" != "0" ]; then
-            find out -mindepth 1 -not -name gen.json -delete
-          fi
-      - name: Collect
-        id: collect
-        run: node -e 'console.log(`status=${require("./out/gen.json").status}`)' >> "$GITHUB_OUTPUT"
+        run: bash trusted/.github/test-agent/generate.sh collect 1
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: gen-1
@@ -205,10 +196,126 @@ jobs:
           retention-days: 14
 
   verify:
-    needs: [scope, generate]
+    name: verify-1
+    needs: [scope, baseline, generate]
     if: needs.generate.outputs.status == 'patch'
     runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    outputs:
+      publish: ${{ steps.verify.outputs.publish }}
+      attempt2: ${{ steps.verify.outputs.attempt2 }}
+    steps:
+      - name: Check out the base commit (trusted)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          path: trusted
+          persist-credentials: false
+      - name: Check out the PR head
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          path: work
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: scope
+          path: ctx
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: baseline
+          path: baseline
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: gen-1
+          path: gen
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '22'
+          package-manager-cache: false
+      - name: Install dependencies and verify the candidate tree (attempt 1)
+        id: verify
+        run: bash trusted/.github/test-agent/verify.sh 1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: verify-1
+          path: out/
+          retention-days: 14
+
+  generate2:
+    name: generate-2
+    needs: [scope, baseline, generate, verify]
+    if: needs.verify.outputs.attempt2 == 'true'
+    runs-on: ubuntu-24.04
     timeout-minutes: 12
+    permissions:
+      contents: read
+    outputs:
+      status: ${{ steps.collect.outputs.status }}
+    steps:
+      - name: Check out the base commit (trusted)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          path: trusted
+          persist-credentials: false
+      - name: Check out the PR head (read by the agent, never run)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          path: work
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: scope
+          path: ctx
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: baseline
+          path: baseline
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: gen-1
+          path: prev
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: verify-1
+          path: fb
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '22'
+          package-manager-cache: false
+      - name: Install the pinned Claude Code CLI
+        run: bash trusted/.github/test-agent/generate.sh install
+      - name: Sanitize the PR checkout and restore the trusted agent and skills
+        run: bash trusted/.github/test-agent/generate.sh prepare 2
+      - name: Run the test-writer agent (attempt 2)
+        id: agent
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          MODEL: ${{ vars.TEST_AGENT_MODEL || 'claude-sonnet-5-5' }}
+          BUDGET_USD: '1.00'
+        run: bash trusted/.github/test-agent/generate.sh agent 2
+      - name: Extract run metadata, patch, guard and secret scan
+        id: collect
+        env:
+          SECRET_SCAN_VALUES: ${{ secrets.ANTHROPIC_API_KEY }}
+          AGENT_EXIT: ${{ steps.agent.outputs.exit }}
+        run: bash trusted/.github/test-agent/generate.sh collect 2
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: gen-2
+          path: out/
+          retention-days: 14
+
+  verify2:
+    name: verify-2
+    needs: [scope, baseline, generate, verify, generate2]
+    if: needs.generate2.outputs.status == 'patch'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
     permissions:
       contents: read
     outputs:
@@ -232,49 +339,39 @@ jobs:
           path: ctx
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          name: gen-1
+          name: baseline
+          path: baseline
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: gen-2
           path: gen
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: '22'
           package-manager-cache: false
-      - name: Install dependencies without lifecycle scripts
-        run: |
-          for pkg in backend frontend; do
-            if grep -q "^diff --git a/$pkg/" gen/patch1.diff || node -e "process.exit(require('./ctx/scope.json').packages.includes('$pkg') ? 0 : 1)"; then
-              echo "::group::$pkg"
-              (cd "work/$pkg" && npm ci --ignore-scripts --no-audit --no-fund) || echo "$pkg npm ci failed" >> install-failures.txt
-              if [ "$pkg" = backend ]; then (cd work/backend && npx prisma generate) || echo "backend prisma generate failed" >> install-failures.txt; fi
-              echo "::endgroup::"
-            fi
-          done
-      - name: Verify the candidate tree
+      - name: Install dependencies and verify the candidate tree (attempt 2)
         id: verify
-        run: |
-          mkdir -p out
-          node trusted/.claude/skills/verify-tests/scripts/verify.mjs verify --dir work --patch gen/patch1.diff --files gen/files1 \
-            --scope ctx/scope.json --guard gen/guard1.json --result gen/result1.json --head-sha "$HEAD_SHA" --attempt 1 \
-            --out out/verify1.json --feedback out/feedback1.md --candidate-out out/candidate --work "$RUNNER_TEMP/verify1"
-          if [ -f install-failures.txt ]; then node -e '
-            const fs=require("fs"); const v=JSON.parse(fs.readFileSync("out/verify1.json","utf8"));
-            const f=fs.readFileSync("install-failures.txt","utf8").trim().split("\n");
-            v.classes.infrastructure.push(...f); v.gate.reasons.push(...f); v.gate.publish=false;
-            fs.writeFileSync("out/verify1.json", JSON.stringify(v,null,2)+"\n");'; fi
-          node -e 'console.log(`publish=${require("./out/verify1.json").gate.publish}`)' >> "$GITHUB_OUTPUT"
+        run: bash trusted/.github/test-agent/verify.sh 2
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: verify-1
+          name: verify-2
           path: out/
           retention-days: 14
 
   publish:
-    needs: [scope, generate, verify]
-    if: needs.verify.outputs.publish == 'true' && github.event.pull_request.head.repo.full_name == github.repository
+    needs: [scope, baseline, generate, verify, generate2, verify2]
+    # The final attempt decides: verify-1 when no attempt 2 was asked for, else verify-2.
+    if: >-
+      !cancelled() && github.event.pull_request.head.repo.full_name == github.repository &&
+      ((needs.verify.outputs.publish == 'true' && needs.verify.outputs.attempt2 != 'true') ||
+      needs.verify2.outputs.publish == 'true')
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
       contents: write
       statuses: write
+    env:
+      FINAL: ${{ needs.verify.outputs.attempt2 == 'true' && '2' || '1' }}
     steps:
       - name: Check out the base commit (trusted)
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -288,11 +385,15 @@ jobs:
           path: ctx
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          name: gen-1
+          name: baseline
+          path: baseline
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: gen-${{ needs.verify.outputs.attempt2 == 'true' && '2' || '1' }}
           path: gen
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          name: verify-1
+          name: verify-${{ needs.verify.outputs.attempt2 == 'true' && '2' || '1' }}
           path: verify
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
@@ -307,8 +408,8 @@ jobs:
         run: |
           mkdir -p out
           # Candidate bytes come from the generate artifact (a job that never ran PR code), not from verify.
-          node trusted/.github/test-agent/publish.mjs --verify verify/verify1.json --candidate gen/files1 \
-            --patch gen/patch1.diff --scope ctx/scope.json --gen gen/gen.json --out out/publish.json
+          node trusted/.github/test-agent/publish.mjs --verify "verify/verify$FINAL.json" --candidate "gen/files$FINAL" \
+            --patch "gen/patch$FINAL.diff" --scope ctx/scope.json --baseline baseline/baseline.json --gen gen/gen.json --out out/publish.json
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
@@ -317,7 +418,7 @@ jobs:
           retention-days: 14
 
   report:
-    needs: [scope, generate, verify, publish]
+    needs: [scope, baseline, generate, verify, generate2, verify2, publish]
     if: ${{ !cancelled() }}
     runs-on: ubuntu-24.04
     timeout-minutes: 5
@@ -341,6 +442,11 @@ jobs:
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         continue-on-error: true
         with:
+          name: baseline
+          path: arts/baseline
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        continue-on-error: true
+        with:
           name: gen-1
           path: arts/gen-1
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
@@ -348,6 +454,16 @@ jobs:
         with:
           name: verify-1
           path: arts/verify-1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        continue-on-error: true
+        with:
+          name: gen-2
+          path: arts/gen-2
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        continue-on-error: true
+        with:
+          name: verify-2
+          path: arts/verify-2
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         continue-on-error: true
         with:
@@ -363,8 +479,11 @@ jobs:
           TESTED_SHA: ${{ github.event.pull_request.head.sha }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           SCOPE_JOB: ${{ needs.scope.result }}
+          BASELINE_JOB: ${{ needs.baseline.result }}
           GEN_JOB: ${{ needs.generate.result }}
           VERIFY_JOB: ${{ needs.verify.result }}
+          GEN2_JOB: ${{ needs.generate2.result }}
+          VERIFY2_JOB: ${{ needs.verify2.result }}
           PUBLISH_JOB: ${{ needs.publish.result }}
           SAME_REPO: ${{ github.event.pull_request.head.repo.full_name == github.repository }}
         run: |

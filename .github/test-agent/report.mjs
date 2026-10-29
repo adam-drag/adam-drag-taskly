@@ -3,8 +3,9 @@
 //
 //   node report.mjs extract-meta --stream <stream.jsonl> --attempt <n> --out <run-meta.json> [--result-out <result.json>]
 //   node report.mjs render --dir <artifacts dir> --out <report.md> --verdict-out <verdict.json>
-//        artifacts dir holds scope/, gen-1/, verify-1/, publish/ (each optional)
-//        env: SCOPE_JOB, GEN_JOB, VERIFY_JOB, PUBLISH_JOB (job results), TESTED_SHA, RUN_URL
+//        artifacts dir holds scope/, baseline/, gen-1/, verify-1/, gen-2/, verify-2/, publish/ (each optional)
+//        env: SCOPE_JOB, BASELINE_JOB, GEN_JOB, VERIFY_JOB, GEN2_JOB, VERIFY2_JOB, PUBLISH_JOB (job results),
+//             TESTED_SHA, RUN_URL
 //   node report.mjs post --body <report.md> --published-sha <sha|''>
 //        env: GITHUB_TOKEN, GITHUB_REPOSITORY, PR_NUMBER, TESTED_SHA
 //
@@ -79,23 +80,49 @@ export function clean(text, cap = 1500) {
 }
 const cell = (t, cap = 300) => clean(t, cap).replace(/\|/g, '\\|').replace(/\n/g, ' ');
 const fence = (t, cap) => `\`\`\`text\n${clean(t, cap)}\n\`\`\``;
-const pct = (v) => (v == null ? 'n/a' : `${v}%`);
 const short = (s) => (s ? String(s).slice(0, 12) : 'n/a');
 
+// The final attempt is 2 when verify-1 asked for it (trigger_attempt_2), even if the attempt-2 jobs then
+// failed or wrote nothing: the verdict must then name attempt 2, not fall back to attempt 1.
 export function loadInputs(dir, env = process.env) {
+  const verify1 = readJson(join(dir, 'verify-1/verify1.json'));
+  const attempt = verify1?.trigger_attempt_2 === true ? 2 : 1;
+  const metas = [1, 2].map((n) => readJson(join(dir, `gen-${n}/run-meta-${n}.json`))).filter(Boolean);
   return {
+    attempt,
     scope: readJson(join(dir, 'scope/scope.json')),
     scopeJob: env.SCOPE_JOB,
-    gen: readJson(join(dir, 'gen-1/gen.json')),
-    genJob: env.GEN_JOB,
-    result: readJson(join(dir, 'gen-1/result1.json')),
-    meta: readJson(join(dir, 'gen-1/run-meta-1.json')),
-    guard: readJson(join(dir, 'gen-1/guard1.json')),
-    verify: readJson(join(dir, 'verify-1/verify1.json')),
-    verifyJob: env.VERIFY_JOB,
+    baseline: readJson(join(dir, 'baseline/baseline.json')),
+    baselineJob: env.BASELINE_JOB,
+    gen: readJson(join(dir, `gen-${attempt}/gen.json`)),
+    genJob: attempt === 2 ? env.GEN2_JOB : env.GEN_JOB,
+    result: readJson(join(dir, `gen-${attempt}/result${attempt}.json`)),
+    meta: metas.at(-1) ?? null,
+    metas,
+    guard: readJson(join(dir, `gen-${attempt}/guard${attempt}.json`)),
+    verify: readJson(join(dir, `verify-${attempt}/verify${attempt}.json`)),
+    verifyJob: attempt === 2 ? env.VERIFY2_JOB : env.VERIFY_JOB,
+    verify1: attempt === 2 ? verify1 : null,
     publish: readJson(join(dir, 'publish/publish.json')),
     publishJob: env.PUBLISH_JOB,
   };
+}
+
+// Coverage rows: before = head without the candidate tests (baseline), after = the candidate tree (verify).
+export function coverageDelta(before = {}, after = {}) {
+  const rows = [];
+  const fmt = (b, a) => (b == null && a == null ? 'n/a' : `${b == null ? 'n/a' : `${b}%`} -> ${a == null ? 'n/a' : `${a}%`}${b != null && a != null ? ` (${a - b >= 0 ? '+' : ''}${Math.round((a - b) * 100) / 100})` : ''}`);
+  for (const pkg of [...new Set([...Object.keys(before ?? {}), ...Object.keys(after ?? {})])].sort()) {
+    const b = before?.[pkg] ?? {}, a = after?.[pkg] ?? {};
+    const err = [b.error && `before: ${b.error}`, a.error && `after: ${a.error}`].filter(Boolean).join('; ');
+    if (err) { rows.push({ file: `${pkg} total`, error: err }); continue; }
+    const keys = [...new Set([...Object.keys(b), ...Object.keys(a)])].sort((x, y) => (x === 'total' ? -1 : y === 'total' ? 1 : x.localeCompare(y)));
+    for (const k of keys) {
+      const cb = b[k] ?? null, ca = a[k] ?? null;
+      rows.push({ file: k === 'total' ? `${pkg} total` : k, lines: fmt(cb?.lines, ca?.lines), branches: fmt(cb?.branches, ca?.branches), functions: fmt(cb?.functions, ca?.functions) });
+    }
+  }
+  return rows;
 }
 
 export function render(i, { testedSha, runUrl } = {}) {
@@ -110,12 +137,15 @@ export function render(i, { testedSha, runUrl } = {}) {
   if (i.scope && i.scope.decision !== 'generate') {
     out.push(`Changed files: ${i.scope.files.map((f) => `\`${cell(f.path, 160)}\` (${f.kind})`).join(', ') || 'none'}.`, '');
   }
-  if (i.meta) {
+  const metas = i.metas ?? (i.meta ? [i.meta] : []);
+  if (metas.length) {
     out.push('### Skills invoked (from the run transcript)');
-    out.push(`- attempt 1: ${i.meta.skills_invoked?.length ? i.meta.skills_invoked.map((s) => `\`${cell(s, 60)}\``).join(', ') : 'none recorded'}`);
-    const wroteTests = (i.meta.files_written ?? []).some((f) => f.ok);
-    const stackSkill = (i.meta.skills_invoked ?? []).some((s) => s === 'backend-unit-tests' || s === 'frontend-unit-tests');
-    if (wroteTests && !stackSkill) out.push('- warning: test files were written without a stack skill call');
+    for (const m of metas) {
+      out.push(`- attempt ${m.attempt ?? 1}: ${m.skills_invoked?.length ? m.skills_invoked.map((s) => `\`${cell(s, 60)}\``).join(', ') : 'none recorded'}`);
+      const wroteTests = (m.files_written ?? []).some((f) => f.ok);
+      const stackSkill = (m.skills_invoked ?? []).some((s) => s === 'backend-unit-tests' || s === 'frontend-unit-tests');
+      if (wroteTests && !stackSkill) out.push(`- warning: attempt ${m.attempt ?? 1} wrote test files without a stack skill call`);
+    }
     out.push('');
   }
   const ver = i.verify;
@@ -140,6 +170,21 @@ export function render(i, { testedSha, runUrl } = {}) {
     }
     out.push('');
   }
+  const bl = i.baseline;
+  if (bl) {
+    out.push('### Baseline (existing tests on the PR head and on the merge base)');
+    for (const [pkg, p] of Object.entries(bl.packages ?? {})) {
+      const t = (x) => (x?.totals ? `${x.totals.passed}/${x.totals.tests} passed` : `no report (exit ${x?.exit ?? 'n/a'}${x?.signal ? `, ${x.signal}` : ''})`);
+      out.push(`- ${pkg}: merge base ${p.base ? t(p.base) : 'not run'}; head ${p.head?.length ? t(p.head[0]) : 'not run'}${p.head?.length > 1 ? `, failing files rerun ${p.head.length - 1} more time(s)` : ''}${p.inconclusive ? `; inconclusive: ${cell(p.inconclusive, 200)}` : ''}`);
+    }
+    const lines = [
+      ...(bl.pr_induced ?? []).map((x) => `PR-induced (fails 3/3 on head, passes on merge base): \`${cell(x.id, 200)}\``),
+      ...(bl.pre_existing ?? []).map((x) => `pre-existing (fails on both sides): \`${cell(x.id, 200)}\``),
+      ...(bl.flaky ?? []).map((x) => `flaky on head (${cell(x.head_runs, 20)}): \`${cell(x.id, 200)}\``),
+      ...(bl.new_in_pr ?? []).map((x) => `new in PR, fails on head: \`${cell(x.id, 200)}\``),
+    ];
+    out.push(...(lines.length ? lines.slice(0, 20).map((l) => `- ${l}`) : ['- no failing test on head']), '');
+  }
   if (ver || i.guard) {
     out.push('### Verification');
     if (i.guard) out.push(`- Guard: ${i.guard.ok ? 'OK' : `FAILED: ${(i.guard.violations ?? []).map((x) => cell(x, 160)).join('; ')}`}`);
@@ -147,14 +192,16 @@ export function render(i, { testedSha, runUrl } = {}) {
       const t = p.suite.totals;
       out.push(`- ${pkg}: tsc ${p.tsc.ok ? 'OK' : `FAIL (${p.tsc.errors} errors)`}; suite with the candidate tests ${t ? `${t.passed}/${t.tests} passed` : 'no report'}; each candidate file ran 3 times${p.threshold_miss ? '; coverage threshold missed' : ''}`);
     }
+    for (const p of ver?.pr_induced_status ?? []) out.push(`- PR-induced \`${cell(p.id, 200)}\`: now ${cell(p.now, 20)}, agent action ${cell(p.agent_action ?? 'none', 20)}${p.open ? ' (still open)' : ''}`);
+    if (ver?.regressions?.length) out.push(`- Tests that passed in the head baseline and fail with the candidate tests: ${ver.regressions.slice(0, 10).map((r) => `\`${cell(r, 160)}\``).join(', ')}`);
     if (ver) out.push(`- Publish gate: ${ver.gate.publish ? 'holds' : `closed (${ver.gate.reasons.map((r) => cell(r, 160)).join('; ')})`}`);
     out.push('');
-    const covRows = [];
-    for (const [pkg, cov] of Object.entries(ver?.coverage_after ?? {})) {
-      if (cov.error) { covRows.push(`| ${pkg} | ${cell(cov.error, 80)} | | |`); continue; }
-      for (const [k, c] of Object.entries(cov)) if (c) covRows.push(`| ${k === 'total' ? `${pkg} total` : `\`${cell(k, 160)}\``} | ${pct(c.lines)} | ${pct(c.branches)} | ${pct(c.functions)} |`);
+    const rows = coverageDelta(i.baseline?.coverage_before, ver?.coverage_after);
+    if (rows.length) {
+      out.push('### Coverage of the touched files (before -> after the candidate tests)', '', '| File | Lines | Branches | Functions |', '|---|---|---|---|');
+      for (const r of rows) out.push(r.error ? `| ${cell(r.file, 160)} | ${cell(r.error, 160)} | | |` : `| ${r.file.endsWith(' total') ? r.file : `\`${cell(r.file, 160)}\``} | ${r.lines} | ${r.branches} | ${r.functions} |`);
+      out.push('');
     }
-    if (covRows.length) out.push('### Coverage with the candidate tests', '', '| File | Lines | Branches | Functions |', '|---|---|---|---|', ...covRows, '');
   }
   const bugs = i.result?.probable_bugs ?? [];
   if (bugs.length) {
@@ -166,10 +213,18 @@ export function render(i, { testedSha, runUrl } = {}) {
     out.push('');
   }
   out.push('### Run');
-  const r = i.meta?.result;
-  if (r) out.push(`- attempt 1: model \`${cell(i.meta.init?.model ?? 'n/a', 60)}\`, cost $${Number(r.total_cost_usd ?? 0).toFixed(4)}, turns ${r.num_turns}, duration ${(Number(r.duration_ms ?? 0) / 1000).toFixed(1)} s, result \`${cell(r.subtype, 40)}\`${r.permission_denials?.length ? `, permission denials ${r.permission_denials.length}` : ''}`);
+  let cost = 0;
+  for (const m of metas) {
+    const r = m.result;
+    if (!r) { out.push(`- attempt ${m.attempt ?? 1}: no result event in the transcript`); continue; }
+    cost += Number(r.total_cost_usd ?? 0);
+    out.push(`- attempt ${m.attempt ?? 1}: model \`${cell(m.init?.model ?? 'n/a', 60)}\`, cost $${Number(r.total_cost_usd ?? 0).toFixed(4)}, turns ${r.num_turns}, duration ${(Number(r.duration_ms ?? 0) / 1000).toFixed(1)} s, result \`${cell(r.subtype, 40)}\`${r.permission_denials?.length ? `, permission denials ${r.permission_denials.length}` : ''}`);
+  }
+  if (metas.length > 1) out.push(`- total agent cost: $${cost.toFixed(4)}`);
+  if (i.attempt === 2) out.push(`- attempt 2 ran because verify-1 found: ${cell([...(i.verify1?.classes?.test_failure ?? []), ...(i.verify1?.classes?.tsc ?? []), ...(i.verify1?.classes?.open_failure ?? [])].slice(0, 3).join('; ') || 'n/a', 400)}`);
   const pub = i.publish;
-  out.push(`- tested SHA \`${short(testedSha)}\`; verified tree \`${short(ver?.candidate_tree_sha)}\`; pushed SHA \`${short(pub?.commit_sha && pub.status === 'published' ? pub.commit_sha : null)}\`; publish ${pub ? cell(pub.status, 20) : 'not run'}${pub?.reason ? ` (${cell(pub.reason, 200)})` : ''}${pub?.status_error ? `; ${cell(pub.status_error, 120)}` : ''}; attempt 1 of 1`);
+  out.push(`- tested SHA \`${short(testedSha)}\`; verified tree \`${short(ver?.candidate_tree_sha)}\`; pushed SHA \`${short(pub?.commit_sha && pub.status === 'published' ? pub.commit_sha : null)}\`; publish ${pub ? cell(pub.status, 20) : 'not run'}${pub?.reason ? ` (${cell(pub.reason, 200)})` : ''}${pub?.status_error ? `; ${cell(pub.status_error, 120)}` : ''}; final attempt ${i.attempt ?? 1} of 2`);
+  if (i.scope?.merge_base) out.push(`- merge base \`${short(i.scope.merge_base)}\``);
   if (runUrl) out.push(`- run: ${runUrl}`);
   out.push('');
   return { verdict: v, body: `${out.join('\n')}\n` };
@@ -234,7 +289,7 @@ export async function main(argv) {
   if (a.mode === 'render') {
     const inputs = loadInputs(a.dir);
     if (inputs.scope?.decision === 'skip' && inputs.scope?.skip_kind === 'bot-commit') {
-      try { inputs.botStatus = await fetchBotStatus(process.env.TESTED_SHA); } catch (e) { inputs.botStatus = null; console.error(String(e?.message ?? e)); }
+      try { inputs.botStatus = await fetchBotStatus(process.env.TESTED_SHA); } catch (e) { inputs.botStatus = null; inputs.botStatusError = String(e?.message ?? e).slice(0, 200); console.error(inputs.botStatusError); }
     }
     const { verdict, body } = render(inputs, { testedSha: process.env.TESTED_SHA, runUrl: process.env.RUN_URL });
     const safe = withheldIfSecret(body);
