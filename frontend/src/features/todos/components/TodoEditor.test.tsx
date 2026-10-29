@@ -1,6 +1,7 @@
 import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { expect, it, vi } from 'vitest'
+import { mutationResultFixture } from '../../../test/queryResultFixture'
 import { todoFixture } from '../../../test/todoFixture'
 import { useCreateTodoMutation } from '../hooks/useCreateTodoMutation'
 import { useUpdateTodoMutation } from '../hooks/useUpdateTodoMutation'
@@ -30,22 +31,24 @@ vi.mock('./TodoForm', () => ({
 }))
 
 function mockMutations(
-  create: ReturnType<typeof vi.fn>,
-  update: ReturnType<typeof vi.fn>,
+  create: ReturnType<typeof useCreateTodoMutation>['mutateAsync'],
+  update: ReturnType<typeof useUpdateTodoMutation>['mutateAsync'],
   state: { isPending?: boolean; error?: Error | null } = {},
 ) {
-  const result = {
-    isPending: state.isPending ?? false,
-    error: state.error ?? null,
-  }
-  vi.mocked(useCreateTodoMutation).mockReturnValue({
-    ...result,
-    mutateAsync: create,
-  } as unknown as ReturnType<typeof useCreateTodoMutation>)
-  vi.mocked(useUpdateTodoMutation).mockReturnValue({
-    ...result,
-    mutateAsync: update,
-  } as unknown as ReturnType<typeof useUpdateTodoMutation>)
+  vi.mocked(useCreateTodoMutation).mockReturnValue(
+    mutationResultFixture({
+      mutateAsync: create,
+      variables: todoFixture,
+      ...state,
+    }),
+  )
+  vi.mocked(useUpdateTodoMutation).mockReturnValue(
+    mutationResultFixture({
+      mutateAsync: update,
+      variables: { id: todoFixture.id, input: todoFixture },
+      ...state,
+    }),
+  )
 }
 
 it('updates an existing task and reports the saved changes', async () => {

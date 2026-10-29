@@ -1,6 +1,7 @@
 import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { expect, it, vi } from 'vitest'
+import { mutationResultFixture } from '../../../test/queryResultFixture'
 import { todoFixture } from '../../../test/todoFixture'
 import { useDeleteTodoMutation } from '../hooks/useDeleteTodoMutation'
 import { DeleteTodoDialog } from './DeleteTodoDialog'
@@ -11,14 +12,12 @@ vi.mock('../hooks/useDeleteTodoMutation', () => ({
 }))
 
 function mockMutation(
-  mutateAsync: ReturnType<typeof vi.fn>,
+  mutateAsync: ReturnType<typeof useDeleteTodoMutation>['mutateAsync'],
   state: { isPending?: boolean; error?: Error | null } = {},
 ) {
-  vi.mocked(useDeleteTodoMutation).mockReturnValue({
-    isPending: state.isPending ?? false,
-    error: state.error ?? null,
-    mutateAsync,
-  } as unknown as ReturnType<typeof useDeleteTodoMutation>)
+  vi.mocked(useDeleteTodoMutation).mockReturnValue(
+    mutationResultFixture({ mutateAsync, variables: todoFixture.id, ...state }),
+  )
 }
 
 it('deletes the task and then reports it as deleted', async () => {

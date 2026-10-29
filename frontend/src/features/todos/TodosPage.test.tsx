@@ -2,6 +2,10 @@ import { act, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { beforeEach, expect, it, vi } from 'vitest'
 import { useNotice } from '../../hooks/useNotice'
+import {
+  mutationResultFixture,
+  queryResultFixture,
+} from '../../test/queryResultFixture'
 import { todoFixture } from '../../test/todoFixture'
 import { DeleteTodoDialog } from './components/DeleteTodoDialog'
 import { TodoEditor } from './components/TodoEditor'
@@ -53,22 +57,19 @@ function setup({
   busy?: boolean
   queryError?: Error | null
   toggleError?: Error | null
-  mutateAsync?: ReturnType<typeof vi.fn>
+  mutateAsync?: ReturnType<typeof useUpdateTodoMutation>['mutateAsync']
 } = {}) {
   const notify = vi.fn()
-  vi.mocked(useTodosQuery).mockReturnValue({
-    data: [todoFixture],
-    isPending: false,
-    isFetching: false,
-    isError: queryError !== null,
-    error: queryError,
-    refetch: vi.fn(),
-  } as unknown as ReturnType<typeof useTodosQuery>)
-  vi.mocked(useUpdateTodoMutation).mockReturnValue({
-    error: toggleError,
-    reset: vi.fn(),
-    mutateAsync,
-  } as unknown as ReturnType<typeof useUpdateTodoMutation>)
+  vi.mocked(useTodosQuery).mockReturnValue(
+    queryResultFixture({ data: [todoFixture], error: queryError }),
+  )
+  vi.mocked(useUpdateTodoMutation).mockReturnValue(
+    mutationResultFixture({
+      mutateAsync,
+      variables: { id: todoFixture.id, input: { completed: true } },
+      error: toggleError,
+    }),
+  )
   vi.mocked(useTodosBusy).mockReturnValue(busy)
   vi.mocked(useNotice).mockReturnValue({ message: '', notify })
   vi.mocked(useTodoFilters).mockReturnValue({
