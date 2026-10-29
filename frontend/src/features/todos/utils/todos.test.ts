@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { selectTodos } from './todos'
+import { countByStatus, selectTodos } from './todos'
 import type { Todo } from '../types'
 
 const base: Todo = {
@@ -29,5 +29,20 @@ describe('selectTodos', () => {
     const todos = [base, high]
     expect(selectTodos(todos, 'all', '', 'priority')).toEqual([high, base])
     expect(todos).toEqual([base, high])
+  })
+})
+
+describe('countByStatus', () => {
+  it('returns zeros for an empty list', () => {
+    expect(countByStatus([])).toEqual({ active: 0, completed: 0, total: 0 })
+  })
+
+  it('splits active and completed todos and reports the total', () => {
+    const todos = [
+      base,
+      { ...base, id: 2, completed: true },
+      { ...base, id: 3, completed: true },
+    ]
+    expect(countByStatus(todos)).toEqual({ active: 1, completed: 2, total: 3 })
   })
 })
