@@ -1,0 +1,79 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["decision", "reason", "files", "human_test_updates", "pr_induced_failures", "probable_bugs", "excluded"],
+  "properties": {
+    "decision": { "type": "string", "enum": ["generate", "no-op"] },
+    "reason": { "type": "string" },
+    "files": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["path", "action", "kind", "units"],
+        "properties": {
+          "path": { "type": "string" },
+          "action": { "type": "string", "enum": ["added", "updated"] },
+          "kind": { "type": "string", "enum": ["new-test", "extended-test", "human-test-update", "probable-bug-repro", "fixture"] },
+          "units": { "type": "array", "items": { "type": "string" } }
+        }
+      }
+    },
+    "human_test_updates": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["path", "test_name", "before", "after", "diff_citation"],
+        "properties": {
+          "path": { "type": "string" },
+          "test_name": { "type": "string" },
+          "before": { "type": "string" },
+          "after": { "type": "string" },
+          "diff_citation": { "type": "string" }
+        }
+      }
+    },
+    "pr_induced_failures": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["test_id", "action", "note"],
+        "properties": {
+          "test_id": { "type": "string" },
+          "action": { "type": "string", "enum": ["updated", "probable-bug"] },
+          "note": { "type": "string" }
+        }
+      }
+    },
+    "probable_bugs": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["title", "input", "code_path", "observed", "expected", "code_location", "contract_location", "confidence", "test_file"],
+        "properties": {
+          "title": { "type": "string" },
+          "input": { "type": "string" },
+          "code_path": { "type": "string" },
+          "observed": { "type": "string" },
+          "expected": { "type": "string" },
+          "code_location": { "type": "string" },
+          "contract_location": { "type": "string" },
+          "confidence": { "type": "string", "enum": ["high", "medium", "low"] },
+          "test_file": { "type": "string" }
+        }
+      }
+    },
+    "excluded": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["path", "reason"],
+        "properties": { "path": { "type": "string" }, "reason": { "type": "string" } }
+      }
+    }
+  }
+}

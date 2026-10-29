@@ -1,0 +1,34 @@
+{
+  "permissions": {
+    "defaultMode": "dontAsk",
+    "blockReadsOutsideWorkingDirectories": true,
+    "allow": [
+      "Read",
+      "Grep",
+      "Glob",
+      "Skill",
+      "Edit(backend/tests/**/*.ts)",
+      "Edit(frontend/src/**/*.test.ts)",
+      "Edit(frontend/src/**/*.test.tsx)",
+      "Edit(frontend/src/test/*Fixture.ts)"
+    ],
+    "deny": [
+      "Bash",
+      "WebFetch",
+      "WebSearch",
+      "NotebookEdit",
+      "Agent",
+      "Edit(.claude/**)",
+      "Edit(.github/**)",
+      "Edit(**/package*.json)",
+      "Edit(**/*config*.ts)",
+      "Edit(frontend/src/test/setup.ts)",
+      "Edit(frontend/src/design-system/**)",
+      "Edit(backend/prisma/**)"
+    ]
+  },
+  "claudeMdExcludes": ["**/CLAUDE.md", "**/CLAUDE.local.md"],
+  "autoMemoryEnabled": false,
+  "disableBundledSkills": true,
+  "disableAllHooks": true
+}
