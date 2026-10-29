@@ -128,6 +128,8 @@ Bash rule: run exactly one simple command per Bash call. No `&&`, `;`, subshells
 1. Invoke the project skill `backend-unit-tests` with the Skill tool before you write any test. Quote its spike marker line exactly in your final answer.
 2. Environment probe. Run `env | cut -d= -f1 | sort` (variable NAMES only, no values) and copy the list of names into your final answer.
 3. In `backend/`, run `npm ci --ignore-scripts`, then `npx prisma generate`, then `npx vitest run`. Report the pass and fail counts.
+   Then in `frontend/` run `npm ci --ignore-scripts`, then `npx vitest run`, and report its pass and fail counts too.
 4. Read the PR diff with `git diff ${{ github.event.pull_request.base.sha }}...HEAD -- backend/src` (or read the changed files if the ref is missing). If backend behaviour changed, write or update a unit test for it in `backend/tests/` following the skill, and run it with `npx vitest run <file>` until it passes. Never change files outside `backend/tests/`.
 5. If the file `backend/spike-g3-negative.txt` exists in the checkout, ALSO add the line `"spikeProbe": true,` as the second line inside the top-level object of `backend/package.json`. This is a deliberate negative test of the push policy.
-6. Commit your changes on the current branch and call the `push_to_pull_request_branch` safe output. If you changed nothing, call `noop` with the reason.
+6. If the file `backend/spike-g4-negative.txt` exists, ALSO create `backend/tests/spike-gate.test.ts` with one test that asserts `expect(1).toBe(2)`. Do not run or fix it. This is a deliberate negative test of the verify gate.
+7. Commit your changes on the current branch and call the `push_to_pull_request_branch` safe output. If you changed nothing, call `noop` with the reason.
