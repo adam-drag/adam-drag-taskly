@@ -169,7 +169,7 @@ export function render(i, { testedSha, runUrl } = {}) {
   const r = i.meta?.result;
   if (r) out.push(`- attempt 1: model \`${cell(i.meta.init?.model ?? 'n/a', 60)}\`, cost $${Number(r.total_cost_usd ?? 0).toFixed(4)}, turns ${r.num_turns}, duration ${(Number(r.duration_ms ?? 0) / 1000).toFixed(1)} s, result \`${cell(r.subtype, 40)}\`${r.permission_denials?.length ? `, permission denials ${r.permission_denials.length}` : ''}`);
   const pub = i.publish;
-  out.push(`- tested SHA \`${short(testedSha)}\`; verified tree \`${short(ver?.candidate_tree_sha)}\`; pushed SHA \`${short(pub?.commit_sha && pub.status === 'published' ? pub.commit_sha : null)}\`; publish ${pub ? cell(pub.status, 20) : 'not run'}${pub?.reason ? ` (${cell(pub.reason, 200)})` : ''}; attempts 1 of 1 (J1)`);
+  out.push(`- tested SHA \`${short(testedSha)}\`; verified tree \`${short(ver?.candidate_tree_sha)}\`; pushed SHA \`${short(pub?.commit_sha && pub.status === 'published' ? pub.commit_sha : null)}\`; publish ${pub ? cell(pub.status, 20) : 'not run'}${pub?.reason ? ` (${cell(pub.reason, 200)})` : ''}; attempt 1 of 1`);
   if (runUrl) out.push(`- run: ${runUrl}`);
   out.push('');
   return { verdict: v, body: `${out.join('\n')}\n` };
@@ -189,6 +189,14 @@ async function api(method, path, body) {
   });
   const text = await res.text();
   return { status: res.status, json: text ? JSON.parse(text) : null };
+}
+
+// The test-agent/verified status of a commit (newest first), or null when it has none.
+export async function fetchBotStatus(sha, apiImpl = api) {
+  const res = await apiImpl('GET', `/commits/${sha}/statuses?per_page=100`);
+  if (res.status !== 200) throw new Error(`list statuses: HTTP ${res.status}`);
+  const s = (res.json ?? []).find((x) => x.context === 'test-agent/verified');
+  return s ? { state: s.state, description: s.description ?? '' } : null;
 }
 
 // Sticky comment: edit ours in place, create it once. Only when the live head is the tested or the
@@ -219,11 +227,16 @@ export async function main(argv) {
     if (a['result-out']) writeFileSync(a['result-out'], `${JSON.stringify(meta.structured_output, null, 2)}\n`);
     const { structured_output, ...rest } = meta;
     writeFileSync(a.out, `${JSON.stringify(rest, null, 2)}\n`);
-    console.log(JSON.stringify({ skills_invoked: rest.skills_invoked, unexpected_skills: rest.unexpected_skills, files_written: rest.files_written.length, cost: rest.result?.total_cost_usd, turns: rest.result?.num_turns, subtype: rest.result?.subtype, structured: structured_output != null, model: rest.init?.model, apiKeySource: rest.init?.apiKeySource, cli: rest.init?.claude_code_version }));
+    // Model-controlled text (skill names outside the project list, paths) is not printed: this runs before the secret scan.
+    console.log(JSON.stringify({ skills_invoked: rest.skills_invoked.filter((n) => PROJECT_SKILLS.includes(n)), unexpected_skills: rest.unexpected_skills.length, files_written: rest.files_written.length, cost: rest.result?.total_cost_usd, turns: rest.result?.num_turns, subtype: rest.result?.subtype, structured: structured_output != null, model: rest.init?.model, apiKeySource: rest.init?.apiKeySource, cli: rest.init?.claude_code_version }));
     return 0;
   }
   if (a.mode === 'render') {
-    const { verdict, body } = render(loadInputs(a.dir), { testedSha: process.env.TESTED_SHA, runUrl: process.env.RUN_URL });
+    const inputs = loadInputs(a.dir);
+    if (inputs.scope?.decision === 'skip' && inputs.scope?.skip_kind === 'bot-commit') {
+      try { inputs.botStatus = await fetchBotStatus(process.env.TESTED_SHA); } catch (e) { inputs.botStatus = null; console.error(String(e?.message ?? e)); }
+    }
+    const { verdict, body } = render(inputs, { testedSha: process.env.TESTED_SHA, runUrl: process.env.RUN_URL });
     const safe = withheldIfSecret(body);
     writeFileSync(a.out, safe.body);
     const final = safe.hits.length ? { ...verdict, state: 'failure', headline: 'failure: report secret scan hit' } : verdict;

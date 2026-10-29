@@ -1,6 +1,7 @@
 # Plain CI for both packages: install without lifecycle scripts, generate the Prisma client, type check
 # and run the tests with the configured coverage thresholds. No secrets. No format gate: the frontend's
 # own format:check already fails on main on two untouched files.
+# The test-agent-gates job runs the unit tests of the test agent scripts.
 name: CI
 
 on:
@@ -45,3 +46,17 @@ jobs:
         run: npm run typecheck
       - name: Tests with coverage
         run: npm run test:coverage -- --maxWorkers=4
+
+  test-agent-gates:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '22'
+          package-manager-cache: false
+      - name: Tests for the test agent's guard, scope, verdict and publish scripts
+        run: node --test .github/test-agent/tests/*.test.mjs
