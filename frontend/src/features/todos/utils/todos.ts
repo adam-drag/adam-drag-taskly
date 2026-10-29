@@ -70,7 +70,7 @@ export function formatDate(date: string): string {
   }).format(new Date(`${date}T12:00:00`))
 }
 
-export function countByStatus(todos: Todo[]): { active: number; completed: number } {
+export function countByStatus(todos: Todo[]): { active: number; completed: number; total: number } {
   const completed = todos.filter((todo) => todo.completed).length
-  return { active: todos.length - completed, completed }
+  return { active: todos.length - completed, completed, total: todos.length }
 }
