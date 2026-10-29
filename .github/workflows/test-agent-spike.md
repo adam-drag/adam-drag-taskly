@@ -33,6 +33,9 @@ tools:
     - "npx prisma generate:*"
     - "npx vitest:*"
     - "npx tsc:*"
+    - "tail:*"
+    - "sort:*"
+    - "grep:*"
 safe-outputs:
   push-to-pull-request-branch:
     allowed-files:
@@ -117,6 +120,8 @@ jobs:
 # Spike: PR unit-test agent on gh-aw
 
 You are evaluating a pull request in this repository. Work only inside the repository checkout.
+
+Bash rule: run exactly one simple command per Bash call. No `&&`, `;`, subshells, `2>&1` or other redirects. Pipes only where shown below. To work in `backend/`, run `cd backend` as its own call first; the directory persists between calls.
 
 1. Invoke the project skill `backend-unit-tests` with the Skill tool before you write any test. Quote its spike marker line exactly in your final answer.
 2. Environment probe. Run `env | cut -d= -f1 | sort` (variable NAMES only, no values) and copy the list of names into your final answer.
