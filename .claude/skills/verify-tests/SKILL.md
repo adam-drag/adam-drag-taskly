@@ -23,7 +23,9 @@ You cannot run anything. After you finish, the pipeline runs two scripts from th
 - Each changed test file runs **3 times**. Only 3/3 counts as passing; 1/3 or 2/3 is "flaky". So no dependence on the current date, test order, real timers, randomness or the network.
 - Coverage from `coverage-summary.json`, before (PR head) and after (with your patch), per touched src file.
 
-**Publishable** = your changed test files with 3/3 passes, guard OK, and not a probable-bug file. If a fixture file changed and any test failed, nothing is published.
+- `*.probable-bug.test.ts(x)` files are split off **before** any check runs. The candidate tree is the PR head plus your other files; the checks run on exactly that tree, and `verify.json` records its tree id and each file's blob id. Probable-bug files run 3 times on their own, for evidence only, and are never published.
+
+**Publish is all or nothing**: the candidate tree is published only if tsc passes, every candidate test file passes 3 of 3 runs, the full suite has no failure, the guard passes and every step wrote a valid report. One failing or flaky file means nothing is published. Publish refuses any file whose blob id differs from `verify.json`, and any tree whose id differs from the verified tree.
 
 ## Attempt 2 runs only when
 
