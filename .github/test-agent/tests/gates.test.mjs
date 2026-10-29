@@ -181,32 +181,45 @@ test('scope decisions', () => {
   assert.equal(decide({ files: [src, { path: '.claude/x', kind: 'agent-infra', added: 1, removed: 0 }], fork: false, headCommit: human, trustedMissing: [] }).decision, 'skip');
 });
 
+test('scope gives every skip a kind; a fork PR skips generation only', () => {
+  const kind = (o) => decide({ files: [src], fork: false, headCommit: human, trustedMissing: [], ...o }).skip_kind;
+  assert.equal(kind({ fork: true }), 'fork');
+  assert.equal(kind({ trustedMissing: ['x'] }), 'bootstrap');
+  assert.equal(kind({ files: [src, { path: '.github/workflows/pr-test-agent.yml', kind: 'agent-infra', added: 1, removed: 0 }] }), 'infra-edit');
+  assert.equal(kind({ files: Array.from({ length: 21 }, (_, i) => ({ ...src, path: `backend/src/f${i}.ts` })) }), 'size-cap');
+  // An infra edit from a fork is still an infra edit: it needs a human, not a baseline.
+  assert.equal(kind({ fork: true, files: [src, { path: '.claude/x', kind: 'agent-infra', added: 1, removed: 0 }] }), 'infra-edit');
+  // A fork PR whose head is a bot commit is treated as a bot commit.
+  assert.equal(kind({ fork: true, headCommit: bot }), 'bot-commit');
+});
+
 // --- verdict -------------------------------------------------------------------------------------
 
 const gen = { status: 'patch' };
 const verifyOk = { gate: { publish: true, reasons: [] }, classes: {}, candidate: [{ path: 'backend/tests/x.test.ts' }], candidate_tree_sha: 'f'.repeat(40) };
 const scopeGen = { decision: 'generate' };
+const B0 = { pr_induced: [], pre_existing: [], flaky: [], new_in_pr: [], inconclusive: [], head_failing: [] };
 
 test('verdict: published success and probable bug with published tests', () => {
-  assert.equal(computeVerdict({ scope: scopeGen, gen, verify: verifyOk, publish: { status: 'published' } }).state, 'success');
-  const pb = computeVerdict({ scope: scopeGen, gen, verify: { ...verifyOk, classes: { probable_bug: ['bug'] } }, publish: { status: 'published' } });
+  assert.equal(computeVerdict({ scope: scopeGen, baseline: B0, gen, verify: verifyOk, publish: { status: 'published' } }).state, 'success');
+  const pb = computeVerdict({ scope: scopeGen, baseline: B0, gen, verify: { ...verifyOk, classes: { probable_bug: ['bug'] } }, publish: { status: 'published' } });
   assert.equal(pb.state, 'failure');
   assert.equal(pb.class, 'probable_bug');
   assert.equal(pb.published, true);
 });
 
 test('verdict: closed gate, superseded, status write failure', () => {
-  const closed = computeVerdict({ scope: scopeGen, gen, verify: { ...verifyOk, gate: { publish: false, reasons: [] }, classes: { test_failure: ['x: fail'] } } });
+  const closed = computeVerdict({ scope: scopeGen, baseline: B0, gen, verify: { ...verifyOk, gate: { publish: false, reasons: [] }, classes: { test_failure: ['x: fail'] } } });
   assert.equal(closed.class, 'test_failure');
-  assert.equal(computeVerdict({ scope: scopeGen, gen, verify: verifyOk, publish: { status: 'superseded' } }).state, 'success');
-  const st = computeVerdict({ scope: scopeGen, gen, verify: verifyOk, publish: { status: 'published', status_error: 'set status: HTTP 500' } });
+  assert.equal(computeVerdict({ scope: scopeGen, baseline: B0, gen, verify: verifyOk, publish: { status: 'superseded' } }).state, 'success');
+  const st = computeVerdict({ scope: scopeGen, baseline: B0, gen, verify: verifyOk, publish: { status: 'published', status_error: 'set status: HTTP 500' } });
   assert.equal(st.state, 'failure');
   assert.equal(st.class, 'infrastructure');
 });
 
 test('verdict: agent no-op with a probable bug is a failure', () => {
-  assert.equal(computeVerdict({ scope: scopeGen, gen: { status: 'no-op' } }).state, 'success');
-  const v = computeVerdict({ scope: scopeGen, gen: { status: 'no-op', probable_bugs: ['wrong comparison'] } });
+  assert.equal(computeVerdict({ scope: scopeGen, baseline: B0, gen: { status: 'no-op' } }).state, 'success');
+  const v = computeVerdict({ scope: scopeGen, baseline: B0, gen: { status: 'no-op', probable_bugs: ['wrong comparison'] } });
   assert.equal(v.state, 'failure');
   assert.equal(v.class, 'probable_bug');
 });
@@ -222,8 +235,8 @@ test('verdict: a bot-commit run copies the commit status and fails without one',
 test('verdict: missing reports are infrastructure failures', () => {
   assert.equal(computeVerdict({}).class, 'infrastructure');
   assert.equal(computeVerdict({ scope: scopeGen }).class, 'infrastructure');
-  assert.equal(computeVerdict({ scope: scopeGen, gen }).class, 'infrastructure');
-  assert.equal(computeVerdict({ scope: scopeGen, gen, verify: verifyOk }).class, 'infrastructure');
+  assert.equal(computeVerdict({ scope: scopeGen, baseline: B0, gen }).class, 'infrastructure');
+  assert.equal(computeVerdict({ scope: scopeGen, baseline: B0, gen, verify: verifyOk }).class, 'infrastructure');
 });
 
 test('status description stays within 140 characters', () => {
@@ -290,7 +303,7 @@ async function runPublish(opts) {
   const { dir, verify, patchText } = fixture();
   const { files } = checkCandidate({ verify, candidateDir: dir, patchText, testedSha: TESTED });
   const { api, calls } = mockApi(opts);
-  const out = await publish({ api, verify, files, testedSha: TESTED, branch: 'feat/x', prNumber: '8', runUrl: 'https://example/run', verdictInputs: { scope: scopeGen, gen, verify } });
+  const out = await publish({ api, verify, files, testedSha: TESTED, branch: 'feat/x', prNumber: '8', runUrl: 'https://example/run', verdictInputs: { scope: scopeGen, baseline: B0, gen, verify } });
   return { out, calls };
 }
 
@@ -327,7 +340,7 @@ test('publish records a status write that throws after the ref moved', async () 
     if (path.startsWith('/statuses/')) throw new Error('network down');
     return api(method, path, body);
   };
-  const out = await publish({ api: throwing, verify, files, testedSha: TESTED, branch: 'feat/x', prNumber: '8', runUrl: 'u', verdictInputs: { scope: scopeGen, gen, verify } });
+  const out = await publish({ api: throwing, verify, files, testedSha: TESTED, branch: 'feat/x', prNumber: '8', runUrl: 'u', verdictInputs: { scope: scopeGen, baseline: B0, gen, verify } });
   assert.equal(out.status, 'published');
   assert.match(out.status_error, /network down/);
 });
@@ -341,7 +354,7 @@ test('publish keeps the commit sha when the ref PATCH response is lost but the r
     if (method === 'GET' && path.startsWith('/git/ref/heads/')) return { status: 200, json: { object: { sha: '9'.repeat(40) } } };
     return api(method, path, body);
   };
-  const out = await publish({ api: lost, verify, files, testedSha: TESTED, branch: 'feat/x', prNumber: '8', runUrl: 'u', verdictInputs: { scope: scopeGen, gen, verify } });
+  const out = await publish({ api: lost, verify, files, testedSha: TESTED, branch: 'feat/x', prNumber: '8', runUrl: 'u', verdictInputs: { scope: scopeGen, baseline: B0, gen, verify } });
   assert.equal(out.status, 'published');
   assert.equal(out.commit_sha, '9'.repeat(40));
   assert.match(out.ref_update.message, /socket hang up/);
@@ -357,7 +370,7 @@ test('publish records the commit sha and an error when the PATCH response is los
     if (method === 'GET' && path.startsWith('/git/ref/heads/')) return { status: 200, json: { object: { sha: TESTED } } };
     return api(method, path, body);
   };
-  const out = await publish({ api: lost, verify, files, testedSha: TESTED, branch: 'feat/x', prNumber: '8', runUrl: 'u', verdictInputs: { scope: scopeGen, gen, verify } });
+  const out = await publish({ api: lost, verify, files, testedSha: TESTED, branch: 'feat/x', prNumber: '8', runUrl: 'u', verdictInputs: { scope: scopeGen, baseline: B0, gen, verify } });
   assert.equal(out.status, 'error');
   assert.equal(out.commit_sha, '9'.repeat(40));
   assert.match(out.reason, /is not on the branch/);
@@ -374,7 +387,7 @@ test('publish keeps recorded steps when a later call throws', async () => {
     if (method === 'GET' && path.startsWith('/git/ref/')) throw new Error('still down');
     return api(method, path, body);
   };
-  await publish({ api: boom, verify, files, testedSha: TESTED, branch: 'feat/x', prNumber: '8', runUrl: 'u', verdictInputs: { scope: scopeGen, gen, verify }, out });
+  await publish({ api: boom, verify, files, testedSha: TESTED, branch: 'feat/x', prNumber: '8', runUrl: 'u', verdictInputs: { scope: scopeGen, baseline: B0, gen, verify }, out });
   assert.equal(out.status, 'error');
   assert.equal(out.commit_sha, '9'.repeat(40));
   assert.match(out.reason, /ref read back: unknown/);

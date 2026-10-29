@@ -43,6 +43,59 @@ test('scope main() writes skip_kind bot-commit to scope.json when the head is a 
   assert.equal(scope.head_commit.bot, true);
 });
 
+test('scope main() fails closed with exit 1 when the base and head share no merge base', () => {
+  const root = mkdtempSync(join(tmpdir(), 'scope-mb-'));
+  const repo = join(root, 'repo');
+  mkdirSync(repo);
+  git(repo, 'init', '-q');
+  commit(repo, 'Adam', 'base history');
+  const baseSha = git(repo, 'rev-parse', 'HEAD');
+  git(repo, 'checkout', '-q', '--orphan', 'other');
+  commit(repo, 'Adam', 'unrelated history');
+  const headSha = git(repo, 'rev-parse', 'HEAD');
+  const out = join(root, 'out');
+  const log = console.log;
+  console.log = () => {};
+  let code;
+  try { code = scopeMain(['--base', join(root, 'base'), '--head', repo, '--out', out, '--git', repo, '--base-sha', baseSha, '--head-sha', headSha]); } finally { console.log = log; }
+  assert.equal(code, 1);
+  const scope = JSON.parse(readFileSync(join(out, 'scope.json'), 'utf8'));
+  assert.equal(scope.decision, 'error');
+  assert.match(scope.reason, /^no merge base: git merge-base \S+ \S+ exited 1/);
+});
+
+test('scope main() extracts the merge base and scans from it, not from the moved base branch', () => {
+  const root = mkdtempSync(join(tmpdir(), 'scope-mb-'));
+  const repo = join(root, 'repo');
+  mkdirSync(join(repo, 'backend/src/api'), { recursive: true });
+  git(repo, 'init', '-q', '-b', 'main');
+  writeFileSync(join(repo, 'backend/src/api/health.ts'), 'export const a = 1;\n');
+  git(repo, 'add', 'backend/src/api/health.ts');
+  commit(repo, 'Adam', 'base');
+  const mb = git(repo, 'rev-parse', 'HEAD');
+  git(repo, 'checkout', '-q', '-b', 'feature');
+  writeFileSync(join(repo, 'backend/src/api/health.ts'), 'export const a = 2;\n');
+  git(repo, 'add', 'backend/src/api/health.ts');
+  commit(repo, 'Adam', 'feat: change');
+  const headSha = git(repo, 'rev-parse', 'HEAD');
+  git(repo, 'checkout', '-q', 'main');
+  writeFileSync(join(repo, 'README.md'), 'moved on\n');
+  git(repo, 'add', 'README.md');
+  commit(repo, 'Adam', 'docs: base moved');
+  const baseSha = git(repo, 'rev-parse', 'HEAD');
+  git(repo, 'checkout', '-q', 'feature');
+  const out = join(root, 'out'), base = join(root, 'base');
+  const log = console.log;
+  console.log = () => {};
+  try { assert.equal(scopeMain(['--base', base, '--head', repo, '--out', out, '--git', repo, '--base-sha', baseSha, '--head-sha', headSha]), 0); } finally { console.log = log; }
+  const scope = JSON.parse(readFileSync(join(out, 'scope.json'), 'utf8'));
+  assert.equal(scope.merge_base, mb);
+  assert.equal(scope.decision, 'generate');
+  assert.deepEqual(scope.files.map((f) => f.path), ['backend/src/api/health.ts']);
+  assert.equal(readFileSync(join(base, 'backend/src/api/health.ts'), 'utf8'), 'export const a = 1;\n');
+  assert.deepEqual(JSON.parse(readFileSync(join(out, 'shas.json'), 'utf8')), { merge_base: mb, base_sha: baseSha, head_sha: headSha });
+});
+
 // --- report: bot-commit runs ---------------------------------------------------------------------
 
 test('report copies the bot commit status into the verdict', async () => {
