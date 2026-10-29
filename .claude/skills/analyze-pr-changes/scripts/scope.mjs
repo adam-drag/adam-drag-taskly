@@ -146,9 +146,12 @@ function fileDiff(baseRoot, headRoot, rel, status) {
 }
 
 function numstat(diffText) {
-  let added = 0, removed = 0;
+  let added = 0, removed = 0, inHunk = false;
   for (const line of diffText.split('\n')) {
-    if (line.startsWith('+++') || line.startsWith('---')) continue;
+    // File headers (---/+++) come before the first @@; inside a hunk "+++x" is a content line.
+    if (line.startsWith('diff --git ')) { inHunk = false; continue; }
+    if (line.startsWith('@@')) { inHunk = true; continue; }
+    if (!inHunk) continue;
     if (line.startsWith('+')) added++;
     else if (line.startsWith('-')) removed++;
   }
@@ -161,7 +164,7 @@ export function decide({ files, fork, headCommit, trustedMissing }) {
   const srcLines = src.reduce((n, f) => n + f.added + f.removed, 0);
   if (trustedMissing.length) return { decision: 'skip', reason: `bootstrap: trusted agent files missing on base (${trustedMissing.join(', ')})` };
   if (infra.length) return { decision: 'skip', reason: `PR edits agent infrastructure (${infra.map((f) => f.path).join(', ')}); needs human review` };
-  if (isBotCommit(headCommit)) return { decision: 'skip', reason: `head commit ${String(headCommit.sha ?? '').slice(0, 12)} is a test-agent bot commit (author ${BOT_AUTHOR}, subject "${BOT_SUBJECT_PREFIX}")` };
+  if (isBotCommit(headCommit)) return { decision: 'skip', skip_kind: 'bot-commit', reason: `head commit ${String(headCommit.sha ?? '').slice(0, 12)} is a test-agent bot commit (author ${BOT_AUTHOR}, subject "${BOT_SUBJECT_PREFIX}")` };
   if (fork) return { decision: 'skip', reason: 'fork PR: no secrets available, generation skipped' };
   if (!src.length) {
     const kinds = [...new Set(files.map((f) => f.kind))].sort();
@@ -211,13 +214,14 @@ export function main(argv) {
     commits = gitCommits(resolve(args.git), args.from, args.to);
   }
   const headCommit = commits.find((c) => c.sha === args.to) ?? commits[0] ?? null;
-  const { decision, reason } = decide({ files, fork: args.fork, headCommit, trustedMissing });
+  const { decision, reason, skip_kind: skipKind } = decide({ files, fork: args.fork, headCommit, trustedMissing });
   const packages = [...new Set(files
     .filter((f) => ['backend-src', 'frontend-src', 'backend-test', 'frontend-test'].includes(f.kind))
     .map((f) => f.kind.split('-')[0]))].sort();
   const scope = {
     version: 1,
     decision,
+    ...(skipKind ? { skip_kind: skipKind } : {}),
     reason,
     llm_call_needed: decision === 'generate',
     packages,
