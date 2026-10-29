@@ -70,6 +70,30 @@ test('guard sees a banned modifier on a content line that starts with +++', () =
   assert.equal(r.totals.added, 1);
 });
 
+// Guard-bypass fixtures: each is a way a patch could reach code outside the test allow-list, hide a
+// failing test, or delete a human test.
+test('guard refuses bypass attempts: delete, rename, traversal, modes, symlink, binary, skip modifiers', () => {
+  const raw = (...lines) => [...lines, ''].join('\n');
+  const cases = [
+    ['delete', raw('diff --git a/backend/tests/todos.test.ts b/backend/tests/todos.test.ts', 'deleted file mode 100644', 'index 1111111..0000000', '--- a/backend/tests/todos.test.ts', '+++ /dev/null', '@@ -1 +0,0 @@', "-it('a', () => { expect(1).toBe(1); });"), 'delete not allowed'],
+    ['rename', raw('diff --git a/backend/src/a.ts b/backend/tests/a.test.ts', 'similarity index 100%', 'rename from backend/src/a.ts', 'rename to backend/tests/a.test.ts'), 'rename'],
+    ['traversal', newFile('backend/tests/../src/x.test.ts', ['x']), 'path traversal'],
+    ['executable', raw('diff --git a/backend/tests/x.test.ts b/backend/tests/x.test.ts', 'new file mode 100755', '--- /dev/null', '+++ b/backend/tests/x.test.ts', '@@ -0,0 +1 @@', '+x'), 'mode 100755'],
+    ['symlink', raw('diff --git a/backend/tests/x.test.ts b/backend/tests/x.test.ts', 'new file mode 120000', '--- /dev/null', '+++ b/backend/tests/x.test.ts', '@@ -0,0 +1 @@', '+../../.env'), 'symlink'],
+    ['binary', raw('diff --git a/backend/tests/x.test.ts b/backend/tests/x.test.ts', 'new file mode 100644', 'index 0000000..1111111', 'GIT binary patch', 'literal 3', 'KcmZ?wa{d3V0RR91'), 'binary'],
+    ['describe.only', newFile('frontend/src/a.test.tsx', ["describe.only('x', () => {});"]), 'banned modifier'],
+    ['it.todo', newFile('frontend/src/a.test.tsx', ["it.todo('y');"]), 'banned modifier'],
+    ['skipIf', newFile('backend/tests/a.test.ts', ["test.skipIf(true)('z', () => {});"]), 'banned modifier'],
+    ['agent dir', newFile('backend/tests/.claude/skills/x/SKILL.md', ['x']), '.claude/**'],
+    ['lockfile', newFile('backend/tests/package-lock.json', ['{}']), 'package'],
+  ];
+  for (const [name, patch, expected] of cases) {
+    const r = checkPatch(patch);
+    assert.equal(r.ok, false, name);
+    assert.ok(r.violations.some((v) => v.includes(expected)), `${name}: ${r.violations.join('; ')}`);
+  }
+});
+
 function existingFile(beforeText, afterText) {
   const root = mkdtempSync(join(tmpdir(), 'guard-'));
   const before = join(root, 'before'), after = join(root, 'after');
@@ -90,6 +114,22 @@ test('guard refuses a weakened assertion in an existing test file, declared or n
   const declared = checkPatch(patch, before, after, { humanUpdates: [p] });
   assert.ok(!declared.violations.some((v) => v.includes('not in human_test_updates')));
   assert.ok(declared.violations.some((v) => v.includes('weak matcher')));
+});
+
+test('guard refuses a declared human-test update that drops a test case or an expect', () => {
+  const p = 'backend/tests/x.test.ts';
+  const two = "it('a', () => { expect(f()).toBe(3); });\nit('b', () => { expect(g()).toBe(4); });\n";
+  const one = "it('a', () => { expect(f()).toBe(5); });\n";
+  const { before, after } = existingFile(two, one);
+  const patch = modified(p, two.trim().split('\n'), [one.trim()]);
+  const r = checkPatch(patch, before, after, { humanUpdates: [p] });
+  assert.ok(r.violations.some((v) => v.includes('test cases went down 2 -> 1')), r.violations.join('; '));
+  assert.ok(r.violations.some((v) => v.includes('expect( calls went down 2 -> 1')), r.violations.join('; '));
+  // The same file with only the expected value changed and declared is a valid human-test update.
+  const upd = existingFile("it('a', () => { expect(f()).toBe(3); });\n", "it('a', () => { expect(f()).toBe(5); });\n");
+  const ok = checkPatch(modified(p, ["it('a', () => { expect(f()).toBe(3); });"], ["it('a', () => { expect(f()).toBe(5); });"]), upd.before, upd.after, { humanUpdates: [p] });
+  assert.equal(ok.ok, true, ok.violations.join('; '));
+  assert.deepEqual(ok.edited_existing[0].removed_lines, ["it('a', () => { expect(f()).toBe(3); });"]);
 });
 
 test('guard accepts new tests appended to an existing file, weak matchers included', () => {
