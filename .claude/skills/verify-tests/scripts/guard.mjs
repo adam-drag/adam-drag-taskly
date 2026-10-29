@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 // Out-of-model guard for agent patches, plus the secret scan. Node 22, no dependencies. Fails closed.
 //
-//   node guard.mjs --patch <file> --before <tree> --after <tree> [--out guard.json]
+//   node guard.mjs --patch <file> --before <tree> --after <tree> [--result result.json] [--out guard.json]
+//     stdout carries counts only; violations (which quote model output) go to --out
 //   node guard.mjs --secret-scan <file>... [--out scan.json]
 //     literal secret values come from SECRET_SCAN_VALUES (newline-separated), never from argv
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
@@ -31,6 +32,10 @@ const BANNED = [
 ];
 const TEST_CASE = /\b(?:it|test)(?:\.(?:concurrent|sequential))?(?:\.each)?\s*[(`]/g;
 const EXPECT = /\bexpect(?:\.soft)?\s*\(/g;
+// An assertion on a line: expect(...) or a chained matcher such as .toBe( / .rejects.
+const ASSERTION = /\bexpect(?:\.soft)?\s*\(|\.(?:to[A-Z]\w*|rejects|resolves)\b/;
+// Matchers that accept almost any value. Adding them to an existing test file weakens it.
+const WEAK_MATCHER = /\.(?:toBeDefined|toBeTruthy|toBeFalsy|toBeUndefined)\s*\(|\bexpect\.(?:any|anything)\s*\(/;
 
 export function parsePatch(text) {
   const files = [];
@@ -51,8 +56,9 @@ export function parsePatch(text) {
         else if (line.startsWith('@@')) inHunk = true;
         continue;
       }
-      if (line.startsWith('+') && !line.startsWith('+++')) { f.added++; f.addedLines.push(line.slice(1)); }
-      else if (line.startsWith('-') && !line.startsWith('---')) { f.removed++; f.removedLines.push(line.slice(1)); }
+      // Inside a hunk every +/- line is content, also "+++x" or "---x". File headers come before the first @@.
+      if (line.startsWith('+')) { f.added++; f.addedLines.push(line.slice(1)); }
+      else if (line.startsWith('-')) { f.removed++; f.removedLines.push(line.slice(1)); }
       else if (line.startsWith('GIT binary patch')) f.flags.push('binary');
     }
     if (f.newMode && f.newMode !== '100644') f.flags.push(f.newMode === '120000' ? 'symlink' : `mode ${f.newMode}`);
@@ -64,7 +70,10 @@ export function parsePatch(text) {
 
 const count = (text, re) => (text.match(re) || []).length;
 
-export function checkPatch(patchText, beforeRoot, afterRoot) {
+// humanUpdates: paths the agent declared in result.human_test_updates. Removing an assertion line from an
+// existing test file is allowed only in those files.
+export function checkPatch(patchText, beforeRoot, afterRoot, { humanUpdates = [] } = {}) {
+  const declared = new Set(humanUpdates);
   const violations = [];
   const files = parsePatch(patchText);
   if (!patchText.trim()) return { ok: true, empty: true, violations, files: [], edited_existing: [], totals: { files: 0, added: 0 } };
@@ -99,6 +108,8 @@ export function checkPatch(patchText, beforeRoot, afterRoot) {
       };
       if (e.tests_after < e.tests_before) violations.push(`${f.b}: test cases went down ${e.tests_before} -> ${e.tests_after} (no-weakening)`);
       if (e.expects_after < e.expects_before) violations.push(`${f.b}: expect( calls went down ${e.expects_before} -> ${e.expects_after} (no-weakening)`);
+      if (!declared.has(f.b) && f.removedLines.some((l) => ASSERTION.test(l))) violations.push(`${f.b}: assertion lines removed from an existing test file that is not in human_test_updates (no-weakening)`);
+      if (f.addedLines.some((l) => WEAK_MATCHER.test(l))) violations.push(`${f.b}: weak matcher added to an existing test file (toBeDefined/toBeTruthy/toBeFalsy/toBeUndefined/expect.any/expect.anything) (no-weakening)`);
       editedExisting.push(e);
     }
   }
@@ -167,9 +178,14 @@ export function main(argv) {
     return ok ? 0 : 1;
   }
   if (!args.patch) { console.error('usage: guard.mjs --patch <file> --before <dir> --after <dir> [--out <file>]'); return 2; }
-  const result = checkPatch(readFileSync(args.patch, 'utf8'), args.before, args.after);
+  let humanUpdates = [];
+  if (args.result && existsSync(args.result)) {
+    try { humanUpdates = (JSON.parse(readFileSync(args.result, 'utf8') || 'null')?.human_test_updates ?? []).map((u) => u.path); } catch { humanUpdates = []; }
+  }
+  const result = checkPatch(readFileSync(args.patch, 'utf8'), args.before, args.after, { humanUpdates });
   if (args.out) writeFileSync(args.out, `${JSON.stringify(result, null, 2)}\n`);
-  console.log(JSON.stringify({ guard_ok: result.ok, violations: result.violations, files: result.files.map((f) => `${f.status} ${f.path} +${f.added}/-${f.removed}`) }));
+  // Counts only: violation text and paths come from model output and are not secret-scanned yet.
+  console.log(JSON.stringify({ guard_ok: result.ok, violations: result.violations.length, files: result.files.length, added: result.totals.added }));
   return result.ok ? 0 : 1;
 }
 

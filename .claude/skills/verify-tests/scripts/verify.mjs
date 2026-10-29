@@ -247,8 +247,11 @@ export function verify(args) {
     const reps = [];
     for (let i = 1; i <= RUNS && changed.length; i++) {
       const r = vitest(pkgDir, join(work, `rerun-${pkg}-${i}.json`), { files: changed.map((p) => p.slice(pkg.length + 1)), log: join(work, `rerun-${pkg}-${i}.log`) });
+      const ri = indexResults(r.json, dir);
       if (!r.json) infra.push(`${pkg}: rerun ${i} wrote no JSON report (exit ${r.status})`);
-      reps.push(indexResults(r.json, dir));
+      else if (r.signal) infra.push(`${pkg}: rerun ${i} was killed (${r.signal})`);
+      else if (r.status !== 0 && changed.every((p) => ri.files[p]?.status === 'passed')) infra.push(`${pkg}: rerun ${i} exited ${r.status} with every candidate file passing`);
+      reps.push(ri);
     }
     out.packages[pkg] = {
       tsc: { ok: t.ok, exit: t.exit, errors: t.errors.length, ms: t.ms },
@@ -269,6 +272,7 @@ export function verify(args) {
       out.files.push({ path: c.path, package: pkg, verdict, runs: runnable ? `${passes}/${RUNS}` : 'n/a', in_full_suite: inSuite, tsc_errors: tscErrors.length });
     }
     out.coverage_after[pkg] = coverageFor(join(covDir, 'coverage-summary.json'), dir, touchedSrc(scope).filter((p) => PKG_OF(p) === pkg));
+    if (out.coverage_after[pkg].error) infra.push(`${pkg}: ${out.coverage_after[pkg].error}`);
   }
 
   // 4. Probable-bug files: evidence only, 3 runs on the tested head, then removed again.
@@ -291,7 +295,7 @@ export function verify(args) {
     out.probable_bug_files.push(entry);
   }
 
-  // 5. PR-induced failures from the baseline (J2 fills the baseline; empty in J1).
+  // 5. PR-induced failures from the baseline (empty when the workflow runs no baseline).
   for (const t of baselineJson?.pr_induced ?? []) {
     const now = index[t.package]?.tests[t.id];
     const action = (result?.pr_induced_failures ?? []).find((p) => p.test_id === t.id)?.action ?? null;
@@ -321,7 +325,7 @@ export function verify(args) {
   out.gate.publish = candidate.length > 0 && blocking.length === 0;
   out.trigger_attempt_2 = attempt === 1 && guardOk && infra.length === 0 && (badFiles.length > 0 || tscFailing.length > 0 || out.pr_induced_status.some((p) => p.open));
 
-  // feedback.md for attempt 2 (J2 runs it): untrusted data, ANSI stripped, capped.
+  // feedback.md for attempt 2: untrusted data, ANSI stripped, capped.
   if (args.feedback) {
     const parts = [];
     for (const f of badFiles) {
