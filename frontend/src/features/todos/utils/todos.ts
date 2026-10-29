@@ -69,3 +69,8 @@ export function formatDate(date: string): string {
     year: 'numeric',
   }).format(new Date(`${date}T12:00:00`))
 }
+
+export function countByStatus(todos: Todo[]): { active: number; completed: number } {
+  const completed = todos.filter((todo) => todo.completed).length
+  return { active: todos.length - completed, completed }
+}
