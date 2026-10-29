@@ -14,8 +14,7 @@ name: PR test agent
 on:
   pull_request:
     types: [opened, synchronize, reopened]
-    # agent-dev is for J1 scratch PRs only and is removed before the J1 merge.
-    branches: [main, agent-dev]
+    branches: [main]
 
 permissions: {}
 
@@ -300,8 +299,6 @@ jobs:
           HEAD_REF: ${{ github.event.pull_request.head.ref }}
           TESTED_SHA: ${{ github.event.pull_request.head.sha }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-          # K4b stale-head drill: J1 scratch PRs on agent-dev with the j1-stale-drill label only. Removed before the J1 merge.
-          STALE_DRILL: ${{ github.event.pull_request.base.ref == 'agent-dev' && contains(github.event.pull_request.labels.*.name, 'j1-stale-drill') && '1' || '0' }}
         run: |
           mkdir -p out
           node trusted/.github/test-agent/publish.mjs --verify verify/verify1.json --candidate verify/candidate \

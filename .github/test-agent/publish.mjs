@@ -6,7 +6,6 @@
 //   node publish.mjs --verify <verify.json> --candidate <dir> --patch <agent patch> --scope <scope.json>
 //                    --gen <gen.json> --out <publish.json>
 // env: GITHUB_TOKEN, GITHUB_REPOSITORY, PR_NUMBER, HEAD_REF, TESTED_SHA, RUN_URL
-//      STALE_DRILL=1 only for the J1 stale-head drill (K4b); removed before the J1 merge.
 import { createHash } from 'node:crypto';
 import { existsSync, lstatSync, readFileSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
@@ -77,7 +76,7 @@ export function makeApi({ token, repo, fetchImpl = fetch }) {
 
 const refPath = (branch) => `/git/refs/heads/${branch.split('/').map(encodeURIComponent).join('/')}`;
 
-export async function publish({ api, verify, files, testedSha, branch, prNumber, runUrl, verdictInputs, staleDrill = false }) {
+export async function publish({ api, verify, files, testedSha, branch, prNumber, runUrl, verdictInputs }) {
   const out = { status: 'error', tested_sha: testedSha, verified_tree_sha: verify.candidate_tree_sha, steps: [] };
   const step = (name, data) => out.steps.push({ name, ...data });
 
@@ -109,14 +108,6 @@ export async function publish({ api, verify, files, testedSha, branch, prNumber,
   if (commit.status !== 201) { out.reason = `create commit: HTTP ${commit.status}`; return out; }
   out.commit_sha = commit.json.sha;
   step('commit', { sha: commit.json.sha, tree: commit.json.tree?.sha, parents: commit.json.parents?.map((p) => p.sha), author: commit.json.author?.name, message: commit.json.message });
-
-  // K4b drill (J1 only, scratch PRs on agent-dev): move the branch after the pre-check, then try the update.
-  if (staleDrill) {
-    const drill = await api('POST', '/git/commits', { message: 'chore(drill): move the head after the publish pre-check', tree: tested.json.tree.sha, parents: [testedSha] });
-    const moved = drill.status === 201 ? await api('PATCH', refPath(branch), { sha: drill.json.sha, force: false }) : drill;
-    out.drill = { drill_commit: drill.json?.sha ?? null, move_status: moved.status };
-    step('stale-drill', out.drill);
-  }
 
   // 4. Fast-forward-only ref update. A moved head makes GitHub refuse it.
   const ref = await api('PATCH', refPath(branch), { sha: commit.json.sha, force: false });
@@ -155,13 +146,13 @@ export async function main(argv) {
     } else {
       const verdictInputs = { scope: readJson(a.scope), gen: readJson(a.gen), verify };
       const api = makeApi({ token: env.GITHUB_TOKEN, repo: env.GITHUB_REPOSITORY });
-      Object.assign(out, await publish({ api, verify, files, testedSha, branch: env.HEAD_REF, prNumber: env.PR_NUMBER, runUrl: env.RUN_URL, verdictInputs, staleDrill: env.STALE_DRILL === '1' }));
+      Object.assign(out, await publish({ api, verify, files, testedSha, branch: env.HEAD_REF, prNumber: env.PR_NUMBER, runUrl: env.RUN_URL, verdictInputs }));
     }
   } catch (e) {
     Object.assign(out, { status: 'error', reason: `publish crashed: ${String(e?.message ?? e).slice(0, 300)}` });
   }
   writeFileSync(a.out, `${JSON.stringify(out, null, 2)}\n`);
-  console.log(JSON.stringify({ status: out.status, reason: out.reason ?? null, commit: out.commit_sha ?? null, tree: out.github_tree_sha ?? null, ref_update: out.ref_update ?? null, drill: out.drill ?? null, commit_status: out.commit_status ?? null }));
+  console.log(JSON.stringify({ status: out.status, reason: out.reason ?? null, commit: out.commit_sha ?? null, tree: out.github_tree_sha ?? null, ref_update: out.ref_update ?? null, commit_status: out.commit_status ?? null }));
   return out.status === 'published' || out.status === 'superseded' ? 0 : 1;
 }
 
