@@ -5,7 +5,7 @@ dotenv.config({ path: fileURLToPath(new URL('../../../.env', import.meta.url)), 
 
 export function resolveDatabaseUrl(override?: string): string {
   const explicit = override || process.env.DATABASE_URL;
-  if (explicit) return explicit.replace(/^postgresql\+psycopg:/, 'postgresql:');
+  if (explicit) return explicit.trim().replace(/^postgresql\+psycopg:/, 'postgresql:');
   const required = ['POSTGRES_USER', 'POSTGRES_PASSWORD', 'POSTGRES_HOST', 'DB_PORT', 'POSTGRES_DB'];
   for (const name of required) {
     if (!process.env[name]) throw new Error(`Missing environment variable: ${name}`);
