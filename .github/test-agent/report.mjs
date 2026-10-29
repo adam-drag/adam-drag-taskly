@@ -82,14 +82,11 @@ const cell = (t, cap = 300) => clean(t, cap).replace(/\|/g, '\\|').replace(/\n/g
 const fence = (t, cap) => `\`\`\`text\n${clean(t, cap)}\n\`\`\``;
 const short = (s) => (s ? String(s).slice(0, 12) : 'n/a');
 
-// The final attempt is the one publish used (publish.json records it). Without a publish run it is 2 when
-// verify-1 asked for attempt 2, even if the attempt-2 jobs then failed or wrote nothing, so the verdict
-// names attempt 2 instead of falling back to attempt 1.
+// The final attempt is 2 when verify-1 asked for it (trigger_attempt_2), even if the attempt-2 jobs then
+// failed or wrote nothing: the verdict must then name attempt 2, not fall back to attempt 1.
 export function loadInputs(dir, env = process.env) {
   const verify1 = readJson(join(dir, 'verify-1/verify1.json'));
-  const publish = readJson(join(dir, 'publish/publish.json'));
-  const asked2 = verify1?.trigger_attempt_2 === true;
-  const attempt = publish?.attempt === 1 || publish?.attempt === 2 ? publish.attempt : asked2 ? 2 : 1;
+  const attempt = verify1?.trigger_attempt_2 === true ? 2 : 1;
   const metas = [1, 2].map((n) => readJson(join(dir, `gen-${n}/run-meta-${n}.json`))).filter(Boolean);
   return {
     attempt,
@@ -105,9 +102,8 @@ export function loadInputs(dir, env = process.env) {
     guard: readJson(join(dir, `gen-${attempt}/guard${attempt}.json`)),
     verify: readJson(join(dir, `verify-${attempt}/verify${attempt}.json`)),
     verifyJob: attempt === 2 ? env.VERIFY2_JOB : env.VERIFY_JOB,
-    verify1: asked2 ? verify1 : null,
-    attempt2: asked2 ? { gen: readJson(join(dir, 'gen-2/gen.json')), verify: readJson(join(dir, 'verify-2/verify2.json')), genJob: env.GEN2_JOB, verifyJob: env.VERIFY2_JOB } : null,
-    publish,
+    verify1: attempt === 2 ? verify1 : null,
+    publish: readJson(join(dir, 'publish/publish.json')),
     publishJob: env.PUBLISH_JOB,
   };
 }
@@ -225,12 +221,7 @@ export function render(i, { testedSha, runUrl } = {}) {
     out.push(`- attempt ${m.attempt ?? 1}: model \`${cell(m.init?.model ?? 'n/a', 60)}\`, cost $${Number(r.total_cost_usd ?? 0).toFixed(4)}, turns ${r.num_turns}, duration ${(Number(r.duration_ms ?? 0) / 1000).toFixed(1)} s, result \`${cell(r.subtype, 40)}\`${r.permission_denials?.length ? `, permission denials ${r.permission_denials.length}` : ''}`);
   }
   if (metas.length > 1) out.push(`- total agent cost: $${cost.toFixed(4)}`);
-  if (i.verify1) out.push(`- attempt 2 ran because verify-1 found: ${cell([...(i.verify1.classes?.test_failure ?? []), ...(i.verify1.classes?.tsc ?? []), ...(i.verify1.classes?.open_failure ?? [])].slice(0, 3).join('; ') || 'n/a', 400)}`);
-  if (i.verify1 && i.attempt === 1) {
-    const a2 = i.attempt2 ?? {};
-    const why = a2.verify ? `verify-2 gate closed (${(a2.verify.gate?.reasons ?? []).slice(0, 3).join('; ')})` : a2.gen ? `generate-2 status ${a2.gen.status}` : `generate-2 job ${a2.genJob ?? 'did not run'}`;
-    out.push(`- attempt 2 gave no publishable tree: ${cell(why, 400)}; the verified attempt-1 tree was published`);
-  }
+  if (i.attempt === 2) out.push(`- attempt 2 ran because verify-1 found: ${cell([...(i.verify1?.classes?.test_failure ?? []), ...(i.verify1?.classes?.tsc ?? []), ...(i.verify1?.classes?.open_failure ?? [])].slice(0, 3).join('; ') || 'n/a', 400)}`);
   const pub = i.publish;
   out.push(`- tested SHA \`${short(testedSha)}\`; verified tree \`${short(ver?.candidate_tree_sha)}\`; pushed SHA \`${short(pub?.commit_sha && pub.status === 'published' ? pub.commit_sha : null)}\`; publish ${pub ? cell(pub.status, 20) : 'not run'}${pub?.reason ? ` (${cell(pub.reason, 200)})` : ''}${pub?.status_error ? `; ${cell(pub.status_error, 120)}` : ''}; final attempt ${i.attempt ?? 1} of 2`);
   if (i.scope?.merge_base) out.push(`- merge base \`${short(i.scope.merge_base)}\``);
