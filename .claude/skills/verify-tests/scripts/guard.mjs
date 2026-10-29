@@ -20,7 +20,9 @@ const DENY = [
   [/(^|\/)\.claude\//, '.claude/**'],
   [/(^|\/)package(-lock)?\.json$|(^|\/)package[^/]*\.json$/, 'package*.json'],
   [/(^|\/)(package-lock\.json|npm-shrinkwrap\.json|yarn\.lock|pnpm-lock\.yaml)$/, 'lockfile'],
-  [/(^|\/)[^/]*config[^/]*\.ts$/i, '*config*.ts'],
+  // Config files that tooling loads (vitest.config.ts, vite.config.ts, prisma.config.ts, core/config.ts).
+  // A test for them, such as backend/tests/config.test.ts, does not end in config.ts and stays allowed.
+  [/(^|\/)[^/]*config\.ts$/i, '*config.ts'],
   [/(^|\/)prisma\//, 'prisma/**'],
   [/^frontend\/src\/test\/setup\.ts$/, 'frontend/src/test/setup.ts'],
   [/(^|\/)design-system\/mocks\.tsx$/, 'design-system/mocks.tsx'],

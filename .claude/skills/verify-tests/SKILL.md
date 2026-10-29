@@ -9,7 +9,7 @@ You cannot run anything. After you finish, the pipeline runs two scripts from th
 
 ## 1. Guard (`scripts/guard.mjs`), on your patch, fails closed
 
-- Allowed paths only: `backend/tests/**/*.ts`, `frontend/src/**/*.test.ts(x)`, `frontend/src/test/*Fixture.ts`. Denied explicitly: `.github/**`, `.claude/**`, `package*.json`, lockfiles, `*config*.ts`, `prisma/**`, `frontend/src/test/setup.ts`, `design-system/mocks.tsx`.
+- Allowed paths only: `backend/tests/**/*.ts`, `frontend/src/**/*.test.ts(x)`, `frontend/src/test/*Fixture.ts`. Denied explicitly: `.github/**`, `.claude/**`, `package*.json`, lockfiles, `*config.ts` (config files such as `vitest.config.ts`; a test file such as `config.test.ts` is allowed), `prisma/**`, `frontend/src/test/setup.ts`, `design-system/mocks.tsx`.
 - No deletes, renames, symlinks, mode changes or binary files.
 - At most 400 added lines per file and 1500 in total.
 - No `.only`, `.skip`, `.todo`, `.fails`, `skipIf`, `runIf`, `xit`, `fit`.

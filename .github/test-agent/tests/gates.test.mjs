@@ -42,7 +42,16 @@ test('guard accepts a new backend test file', () => {
 test('guard refuses paths outside the allow-list and denied paths', () => {
   assert.equal(checkPatch(newFile('backend/src/api/health.ts', ['x'])).ok, false);
   assert.equal(checkPatch(newFile('.github/workflows/x.yml', ['x'])).ok, false);
-  assert.equal(checkPatch(newFile('backend/tests/config.test.ts', ['x'])).ok, false);
+  assert.equal(checkPatch(newFile('backend/tests/vitest.config.ts', ['x'])).ok, false);
+  assert.equal(checkPatch(newFile('backend/vitest.config.ts', ['x'])).ok, false);
+  assert.equal(checkPatch(newFile('frontend/src/app.config.ts', ['x'])).ok, false);
+});
+
+test('guard accepts a test file for a config module', () => {
+  for (const p of ['backend/tests/config.test.ts', 'frontend/src/lib/config.test.tsx']) {
+    const r = checkPatch(newFile(p, ["it('a', () => {});"]));
+    assert.equal(r.ok, true, `${p}: ${r.violations.join('; ')}`);
+  }
 });
 
 test('guard sees a banned modifier on a content line that starts with +++', () => {
