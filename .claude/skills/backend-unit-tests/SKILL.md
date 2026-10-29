@@ -68,7 +68,3 @@ This keeps the types exact, so no `as` casts are needed. `createHealthRouter(dat
 
 - `cd backend && npx tsc --noEmit` (strict; `tsconfig.json` includes `tests/**/*.ts`). Unused imports are fine, wrong types are not: mock return values must match Prisma types, so use `record`.
 - `cd backend && npx vitest run --maxWorkers=4 tests/<file>.test.ts`; coverage with `npm run test:coverage`.
-
-## Spike marker (J1b only)
-
-Spike marker: SKILL-ORIGIN-BASE. When you use this skill, write the exact marker text in your final answer.
