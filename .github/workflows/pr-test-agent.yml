@@ -165,7 +165,7 @@ jobs:
             mkdir -p "out/files1/$(dirname "$f")" && cp "work/$f" "out/files1/$f"
           done
           set +e
-          node "$SK/guard.mjs" --patch out/patch1.diff --before pre --after work --out out/guard1.json
+          node "$SK/guard.mjs" --patch out/patch1.diff --before pre --after work --result out/result1.json --out out/guard1.json
           node "$SK/guard.mjs" --secret-scan out/patch1.diff out/result1.json out/run-meta-1.json "$RUNNER_TEMP/attempt1.stderr" $(find out/files1 -type f) --out "$RUNNER_TEMP/secret-scan1.json"
           SCAN=$?
           set -e
@@ -184,6 +184,7 @@ jobs:
           else if (!guard.ok) g = { status: 'guard-fail', violations: guard.violations };
           else if (!patch.trim()) g = { status: 'no-op', reason: result.reason };
           g.agent_decision = result?.decision ?? null;
+          g.probable_bugs = (result?.probable_bugs ?? []).map((b) => String(b.title ?? '').slice(0, 200));
           fs.writeFileSync('out/gen.json', JSON.stringify(g, null, 2) + '\n');
           console.log(JSON.stringify(g));
           EOF
@@ -301,7 +302,8 @@ jobs:
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           mkdir -p out
-          node trusted/.github/test-agent/publish.mjs --verify verify/verify1.json --candidate verify/candidate \
+          # Candidate bytes come from the generate artifact (a job that never ran PR code), not from verify.
+          node trusted/.github/test-agent/publish.mjs --verify verify/verify1.json --candidate gen/files1 \
             --patch gen/patch1.diff --scope ctx/scope.json --gen gen/gen.json --out out/publish.json
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
@@ -317,6 +319,7 @@ jobs:
     timeout-minutes: 5
     permissions:
       pull-requests: write
+      statuses: read
     steps:
       - name: Check out the base commit (trusted)
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -372,8 +375,9 @@ jobs:
           cat out/report.md >> "$GITHUB_STEP_SUMMARY"
           if [ "$SAME_REPO" = "true" ]; then
             PUBLISHED=$(node -e 'try{const p=require("./arts/publish/publish.json"); if(p.status==="published") console.log(p.commit_sha)}catch{}')
-            node "$REPORT" post --body out/report.md --published-sha "$PUBLISHED" || echo "::warning::sticky comment not posted; the job summary holds the report"
+            node "$REPORT" post --body out/report.md --published-sha "$PUBLISHED" || POST_FAILED=1
           else
             echo "Fork PR: no comment (read-only token). The job summary holds the report." >> "$GITHUB_STEP_SUMMARY"
           fi
           node -e 'const v=require("./out/verdict.json"); console.log(v.headline); process.exit(v.state==="success"?0:1)'
+          if [ "${POST_FAILED:-0}" = 1 ]; then echo "::error::sticky comment not posted; the job summary holds the report"; exit 1; fi

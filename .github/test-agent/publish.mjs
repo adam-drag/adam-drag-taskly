@@ -40,6 +40,8 @@ export function checkCandidate({ verify, candidateDir, patchText, testedSha }) {
   const patchPaths = [...patchText.matchAll(/^diff --git a\/.+? b\/(.+)$/gm)].map((m) => m[1]).filter((p) => !/\.probable-bug\.test\.tsx?$/.test(p));
   const missing = patchPaths.filter((p) => !paths.includes(p)), extra = paths.filter((p) => !patchPaths.includes(p));
   if (missing.length || extra.length) reasons.push(`candidate list differs from the agent patch (missing ${missing.join(', ') || 'none'}; extra ${extra.join(', ') || 'none'})`);
+  // Path, size and modifier rules only: the no-weakening check needs the before/after trees, and publish
+  // never checks out the PR. The generate job ran the full guard on the same patch.
   const guard = checkPatch(patchSubset(patchText, paths));
   if (!guard.ok) reasons.push(...guard.violations.map((v) => `guard: ${v}`));
   const files = [];
@@ -153,7 +155,8 @@ export async function main(argv) {
   }
   writeFileSync(a.out, `${JSON.stringify(out, null, 2)}\n`);
   console.log(JSON.stringify({ status: out.status, reason: out.reason ?? null, commit: out.commit_sha ?? null, tree: out.github_tree_sha ?? null, ref_update: out.ref_update ?? null, commit_status: out.commit_status ?? null }));
-  return out.status === 'published' || out.status === 'superseded' ? 0 : 1;
+  // A failed status write after the ref moved fails the job; the verdict reports it as infrastructure.
+  return (out.status === 'published' && !out.status_error) || out.status === 'superseded' ? 0 : 1;
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1] ?? '').href) process.exitCode = await main(process.argv.slice(2));
