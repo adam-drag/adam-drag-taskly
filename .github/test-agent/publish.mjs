@@ -121,10 +121,13 @@ export async function publish({ api, verify, files, testedSha, branch, prNumber,
 
   // 5. Commit status from the verdict, with the run link.
   const v = computeVerdict({ ...verdictInputs, publish: { status: 'published' } });
-  const st = await api('POST', `/statuses/${commit.json.sha}`, { state: v.state, context: STATUS_CONTEXT, description: statusDescription(v), target_url: runUrl });
+  // The ref has moved: from here on a failure is recorded as status_error, never as a lost publish.
+  let st;
+  try { st = await api('POST', `/statuses/${commit.json.sha}`, { state: v.state, context: STATUS_CONTEXT, description: statusDescription(v), target_url: runUrl }); }
+  catch (e) { st = { status: 0, error: String(e?.message ?? e).slice(0, 200) }; }
   out.commit_status = { http: st.status, state: v.state, description: statusDescription(v) };
   step('status', out.commit_status);
-  if (st.status !== 201) out.status_error = `set status: HTTP ${st.status}`;
+  if (st.status !== 201) out.status_error = `set status: ${st.error ?? `HTTP ${st.status}`}`;
   return out;
 }
 

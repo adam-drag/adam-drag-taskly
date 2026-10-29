@@ -7,7 +7,7 @@ description: Conventions for writing Vitest + Supertest unit tests for the Taskl
 
 ## Where and how files are named
 
-- Tests live flat in `backend/tests/`, one file per area: `validators.test.ts`, `mappers.test.ts`, `repository.test.ts`, `router.test.ts`. New areas get a new file with the same pattern, for example `tests/health.test.ts`, `tests/factory.test.ts`, `tests/environment.test.ts` (file names with `config` in them are denied by the guard).
+- Tests live flat in `backend/tests/`, one file per area: `validators.test.ts`, `mappers.test.ts`, `repository.test.ts`, `router.test.ts`. New areas get a new file with the same pattern, for example `tests/health.test.ts`, `tests/factory.test.ts`, `tests/config.test.ts`. Never name a file so that it ends in `config.ts`: the guard denies those as config files.
 - Vitest picks up `tests/**/*.test.ts` only (`backend/vitest.config.ts`). Environment `node`, no globals.
 - Shared data: `tests/fixture.ts` exports `record` (a `TodoRecord`, Date objects, as Prisma returns it) and `todo` (the API JSON for the same row). Reuse them with spreads: `{ ...record, completed: true }`, `{ ...todo, completed: true }`.
 

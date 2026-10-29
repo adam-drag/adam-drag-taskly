@@ -42,7 +42,16 @@ test('guard accepts a new backend test file', () => {
 test('guard refuses paths outside the allow-list and denied paths', () => {
   assert.equal(checkPatch(newFile('backend/src/api/health.ts', ['x'])).ok, false);
   assert.equal(checkPatch(newFile('.github/workflows/x.yml', ['x'])).ok, false);
-  assert.equal(checkPatch(newFile('backend/tests/config.test.ts', ['x'])).ok, false);
+  assert.equal(checkPatch(newFile('backend/tests/vitest.config.ts', ['x'])).ok, false);
+  assert.equal(checkPatch(newFile('backend/vitest.config.ts', ['x'])).ok, false);
+  assert.equal(checkPatch(newFile('frontend/src/app.config.ts', ['x'])).ok, false);
+});
+
+test('guard accepts a test file for a config module', () => {
+  for (const p of ['backend/tests/config.test.ts', 'frontend/src/lib/config.test.tsx']) {
+    const r = checkPatch(newFile(p, ["it('a', () => {});"]));
+    assert.equal(r.ok, true, `${p}: ${r.violations.join('; ')}`);
+  }
 });
 
 test('guard sees a banned modifier on a content line that starts with +++', () => {
@@ -53,14 +62,19 @@ test('guard sees a banned modifier on a content line that starts with +++', () =
   assert.equal(r.totals.added, 1);
 });
 
-test('guard refuses a weak matcher and an undeclared assertion removal in an existing test file', () => {
+function existingFile(beforeText, afterText) {
   const root = mkdtempSync(join(tmpdir(), 'guard-'));
   const before = join(root, 'before'), after = join(root, 'after');
-  const p = 'backend/tests/x.test.ts';
   mkdirSync(join(before, 'backend/tests'), { recursive: true });
   mkdirSync(join(after, 'backend/tests'), { recursive: true });
-  writeFileSync(join(before, p), "it('a', () => { expect(f()).toBe(3); });\n");
-  writeFileSync(join(after, p), "it('a', () => { expect(f()).toBeDefined(); });\n");
+  writeFileSync(join(before, 'backend/tests/x.test.ts'), beforeText);
+  writeFileSync(join(after, 'backend/tests/x.test.ts'), afterText);
+  return { before, after };
+}
+
+test('guard refuses a weakened assertion in an existing test file, declared or not', () => {
+  const p = 'backend/tests/x.test.ts';
+  const { before, after } = existingFile("it('a', () => { expect(f()).toBe(3); });\n", "it('a', () => { expect(f()).toBeDefined(); });\n");
   const patch = modified(p, ["it('a', () => { expect(f()).toBe(3); });"], ["it('a', () => { expect(f()).toBeDefined(); });"]);
   const undeclared = checkPatch(patch, before, after);
   assert.ok(undeclared.violations.some((v) => v.includes('not in human_test_updates')));
@@ -68,6 +82,72 @@ test('guard refuses a weak matcher and an undeclared assertion removal in an exi
   const declared = checkPatch(patch, before, after, { humanUpdates: [p] });
   assert.ok(!declared.violations.some((v) => v.includes('not in human_test_updates')));
   assert.ok(declared.violations.some((v) => v.includes('weak matcher')));
+});
+
+test('guard accepts new tests appended to an existing file, weak matchers included', () => {
+  const old = "it('a', () => { expect(f()).toBe(3); });";
+  const add = "it('b', () => { expect(g()).toBeUndefined(); });";
+  const { before, after } = existingFile(`${old}\n`, `${old}\n${add}\n`);
+  const patch = [
+    'diff --git a/backend/tests/x.test.ts b/backend/tests/x.test.ts',
+    'index 1111111..2222222 100644',
+    '--- a/backend/tests/x.test.ts',
+    '+++ b/backend/tests/x.test.ts',
+    '@@ -1 +1,2 @@',
+    ` ${old}`,
+    `+${add}`,
+    '',
+  ].join('\n');
+  const r = checkPatch(patch, before, after);
+  assert.equal(r.ok, true, r.violations.join('; '));
+});
+
+const hunkPatch = (hunks) => [
+  'diff --git a/backend/tests/x.test.ts b/backend/tests/x.test.ts', 'index 1111111..2222222 100644',
+  '--- a/backend/tests/x.test.ts', '+++ b/backend/tests/x.test.ts', ...hunks.flat(), '',
+].join('\n');
+
+test('guard refuses a weak matcher that replaces a property line inside a multi-line toEqual', () => {
+  const beforeText = "it('a', () => {\n  expect(f()).toEqual({\n    name: 'Ada',\n  });\n});\n";
+  const afterText = "it('a', () => {\n  expect(f()).toEqual({\n    name: expect.any(String),\n  });\n});\n";
+  const { before, after } = existingFile(beforeText, afterText);
+  const patch = hunkPatch([['@@ -2,3 +2,3 @@', '   expect(f()).toEqual({', "-    name: 'Ada',", '+    name: expect.any(String),', '   });']]);
+  for (const humanUpdates of [[], ['backend/tests/x.test.ts']]) {
+    const r = checkPatch(patch, before, after, { humanUpdates });
+    assert.ok(r.violations.some((v) => v.includes('weak matcher')), r.violations.join('; '));
+  }
+});
+
+test('guard refuses a weak matcher in a declared file that lost an assertion in another hunk', () => {
+  const lines = ["it('a', () => {", '  expect(f()).toBe(3);', ...Array.from({ length: 8 }, (_, i) => `  // ${i}`), '});'];
+  const afterLines = [lines[0], ...lines.slice(2, 10), '  expect(f()).toBeDefined();', lines[10]];
+  const { before, after } = existingFile(`${lines.join('\n')}\n`, `${afterLines.join('\n')}\n`);
+  const patch = hunkPatch([
+    ['@@ -1,3 +1,2 @@', ` ${lines[0]}`, `-${lines[1]}`, ` ${lines[2]}`],
+    ['@@ -10,2 +9,3 @@', ` ${lines[9]}`, '+  expect(f()).toBeDefined();', ` ${lines[10]}`],
+  ]);
+  const r = checkPatch(patch, before, after, { humanUpdates: ['backend/tests/x.test.ts'] });
+  assert.ok(r.violations.some((v) => v.includes('weak matcher') && v.startsWith('backend/tests/x.test.ts: no-weakening rule')), r.violations.join('; '));
+});
+
+test('guard refuses replacing a human test with a renamed one that uses a weak matcher', () => {
+  const oldTest = "it('x', () => { expect(f()).toBe(3); });";
+  const newTest = "it('x2', () => { expect(f()).toBeDefined(); });";
+  const { before, after } = existingFile(`${oldTest}\n`, `${newTest}\n`);
+  const patch = hunkPatch([['@@ -1 +1 @@', `-${oldTest}`, `+${newTest}`]]);
+  for (const humanUpdates of [[], ['backend/tests/x.test.ts']]) {
+    const r = checkPatch(patch, before, after, { humanUpdates });
+    assert.ok(r.violations.some((v) => v.includes('weak matcher')), r.violations.join('; '));
+  }
+});
+
+test('guard refuses an import edit plus an appended weak-matcher test (accepted false positive)', () => {
+  const imp = "import { expect, it } from 'vitest';";
+  const old = "it('a', () => { expect(f()).toBe(3); });";
+  const add = "it('b', () => { expect(g()).toBeUndefined(); });";
+  const { before, after } = existingFile(`${imp}\n${old}\n`, `import { expect, it, vi } from 'vitest';\n${old}\n${add}\n`);
+  const patch = hunkPatch([['@@ -1,2 +1,3 @@', `-${imp}`, "+import { expect, it, vi } from 'vitest';", ` ${old}`, `+${add}`]]);
+  assert.equal(checkPatch(patch, before, after).ok, false);
 });
 
 // --- scope ---------------------------------------------------------------------------------------
@@ -229,4 +309,17 @@ test('publish records a failed status write', async () => {
   const { out } = await runPublish({ statusHttp: 500 });
   assert.equal(out.status, 'published');
   assert.match(out.status_error, /HTTP 500/);
+});
+
+test('publish records a status write that throws after the ref moved', async () => {
+  const { dir, verify, patchText } = fixture();
+  const { files } = checkCandidate({ verify, candidateDir: dir, patchText, testedSha: TESTED });
+  const { api } = mockApi();
+  const throwing = async (method, path, body) => {
+    if (path.startsWith('/statuses/')) throw new Error('network down');
+    return api(method, path, body);
+  };
+  const out = await publish({ api: throwing, verify, files, testedSha: TESTED, branch: 'feat/x', prNumber: '8', runUrl: 'u', verdictInputs: { scope: scopeGen, gen, verify } });
+  assert.equal(out.status, 'published');
+  assert.match(out.status_error, /network down/);
 });

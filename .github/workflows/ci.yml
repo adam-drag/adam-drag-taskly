@@ -58,5 +58,5 @@ jobs:
         with:
           node-version: '22'
           package-manager-cache: false
-      - name: Tests for the test agent's guard, scope, verdict and publish scripts
+      - name: Tests for the test agent scripts (guard, scope, verify, verdict, publish, report)
         run: node --test .github/test-agent/tests/*.test.mjs
