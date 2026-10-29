@@ -53,14 +53,19 @@ test('guard sees a banned modifier on a content line that starts with +++', () =
   assert.equal(r.totals.added, 1);
 });
 
-test('guard refuses a weak matcher and an undeclared assertion removal in an existing test file', () => {
+function existingFile(beforeText, afterText) {
   const root = mkdtempSync(join(tmpdir(), 'guard-'));
   const before = join(root, 'before'), after = join(root, 'after');
-  const p = 'backend/tests/x.test.ts';
   mkdirSync(join(before, 'backend/tests'), { recursive: true });
   mkdirSync(join(after, 'backend/tests'), { recursive: true });
-  writeFileSync(join(before, p), "it('a', () => { expect(f()).toBe(3); });\n");
-  writeFileSync(join(after, p), "it('a', () => { expect(f()).toBeDefined(); });\n");
+  writeFileSync(join(before, 'backend/tests/x.test.ts'), beforeText);
+  writeFileSync(join(after, 'backend/tests/x.test.ts'), afterText);
+  return { before, after };
+}
+
+test('guard refuses a weakened assertion in an existing test file, declared or not', () => {
+  const p = 'backend/tests/x.test.ts';
+  const { before, after } = existingFile("it('a', () => { expect(f()).toBe(3); });\n", "it('a', () => { expect(f()).toBeDefined(); });\n");
   const patch = modified(p, ["it('a', () => { expect(f()).toBe(3); });"], ["it('a', () => { expect(f()).toBeDefined(); });"]);
   const undeclared = checkPatch(patch, before, after);
   assert.ok(undeclared.violations.some((v) => v.includes('not in human_test_updates')));
@@ -68,6 +73,24 @@ test('guard refuses a weak matcher and an undeclared assertion removal in an exi
   const declared = checkPatch(patch, before, after, { humanUpdates: [p] });
   assert.ok(!declared.violations.some((v) => v.includes('not in human_test_updates')));
   assert.ok(declared.violations.some((v) => v.includes('weak matcher')));
+});
+
+test('guard accepts new tests appended to an existing file, weak matchers included', () => {
+  const old = "it('a', () => { expect(f()).toBe(3); });";
+  const add = "it('b', () => { expect(g()).toBeUndefined(); });";
+  const { before, after } = existingFile(`${old}\n`, `${old}\n${add}\n`);
+  const patch = [
+    'diff --git a/backend/tests/x.test.ts b/backend/tests/x.test.ts',
+    'index 1111111..2222222 100644',
+    '--- a/backend/tests/x.test.ts',
+    '+++ b/backend/tests/x.test.ts',
+    '@@ -1 +1,2 @@',
+    ` ${old}`,
+    `+${add}`,
+    '',
+  ].join('\n');
+  const r = checkPatch(patch, before, after);
+  assert.equal(r.ok, true, r.violations.join('; '));
 });
 
 // --- scope ---------------------------------------------------------------------------------------
@@ -229,4 +252,17 @@ test('publish records a failed status write', async () => {
   const { out } = await runPublish({ statusHttp: 500 });
   assert.equal(out.status, 'published');
   assert.match(out.status_error, /HTTP 500/);
+});
+
+test('publish records a status write that throws after the ref moved', async () => {
+  const { dir, verify, patchText } = fixture();
+  const { files } = checkCandidate({ verify, candidateDir: dir, patchText, testedSha: TESTED });
+  const { api } = mockApi();
+  const throwing = async (method, path, body) => {
+    if (path.startsWith('/statuses/')) throw new Error('network down');
+    return api(method, path, body);
+  };
+  const out = await publish({ api: throwing, verify, files, testedSha: TESTED, branch: 'feat/x', prNumber: '8', runUrl: 'u', verdictInputs: { scope: scopeGen, gen, verify } });
+  assert.equal(out.status, 'published');
+  assert.match(out.status_error, /network down/);
 });

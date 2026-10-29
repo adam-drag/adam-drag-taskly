@@ -34,7 +34,7 @@ const TEST_CASE = /\b(?:it|test)(?:\.(?:concurrent|sequential))?(?:\.each)?\s*[(
 const EXPECT = /\bexpect(?:\.soft)?\s*\(/g;
 // An assertion on a line: expect(...) or a chained matcher such as .toBe( / .rejects.
 const ASSERTION = /\bexpect(?:\.soft)?\s*\(|\.(?:to[A-Z]\w*|rejects|resolves)\b/;
-// Matchers that accept almost any value. Adding them to an existing test file weakens it.
+// Matchers that accept almost any value. Replacing an existing assertion with one of them weakens it.
 const WEAK_MATCHER = /\.(?:toBeDefined|toBeTruthy|toBeFalsy|toBeUndefined)\s*\(|\bexpect\.(?:any|anything)\s*\(/;
 
 export function parsePatch(text) {
@@ -108,8 +108,11 @@ export function checkPatch(patchText, beforeRoot, afterRoot, { humanUpdates = []
       };
       if (e.tests_after < e.tests_before) violations.push(`${f.b}: test cases went down ${e.tests_before} -> ${e.tests_after} (no-weakening)`);
       if (e.expects_after < e.expects_before) violations.push(`${f.b}: expect( calls went down ${e.expects_before} -> ${e.expects_after} (no-weakening)`);
-      if (!declared.has(f.b) && f.removedLines.some((l) => ASSERTION.test(l))) violations.push(`${f.b}: assertion lines removed from an existing test file that is not in human_test_updates (no-weakening)`);
-      if (f.addedLines.some((l) => WEAK_MATCHER.test(l))) violations.push(`${f.b}: weak matcher added to an existing test file (toBeDefined/toBeTruthy/toBeFalsy/toBeUndefined/expect.any/expect.anything) (no-weakening)`);
+      // New tests appended to an existing file are fine. Changing existing assertions is not, unless the
+      // agent declared the test in human_test_updates, and even then not towards a weak matcher.
+      const assertionsRemoved = f.removedLines.some((l) => ASSERTION.test(l));
+      if (assertionsRemoved && !declared.has(f.b)) violations.push(`${f.b}: assertion lines removed from an existing test file that is not in human_test_updates (no-weakening)`);
+      if (assertionsRemoved && f.addedLines.some((l) => WEAK_MATCHER.test(l))) violations.push(`${f.b}: an existing assertion is replaced and a weak matcher is added (toBeDefined/toBeTruthy/toBeFalsy/toBeUndefined/expect.any/expect.anything) (no-weakening)`);
       editedExisting.push(e);
     }
   }
