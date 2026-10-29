@@ -93,6 +93,35 @@ test('guard accepts new tests appended to an existing file, weak matchers includ
   assert.equal(r.ok, true, r.violations.join('; '));
 });
 
+const hunkPatch = (hunks) => [
+  'diff --git a/backend/tests/x.test.ts b/backend/tests/x.test.ts', 'index 1111111..2222222 100644',
+  '--- a/backend/tests/x.test.ts', '+++ b/backend/tests/x.test.ts', ...hunks.flat(), '',
+].join('\n');
+
+test('guard refuses a weak matcher that replaces a property line inside a multi-line toEqual', () => {
+  const beforeText = "it('a', () => {\n  expect(f()).toEqual({\n    name: 'Ada',\n  });\n});\n";
+  const afterText = "it('a', () => {\n  expect(f()).toEqual({\n    name: expect.any(String),\n  });\n});\n";
+  const { before, after } = existingFile(beforeText, afterText);
+  const patch = hunkPatch([['@@ -2,3 +2,3 @@', '   expect(f()).toEqual({', "-    name: 'Ada',", '+    name: expect.any(String),', '   });']]);
+  for (const humanUpdates of [[], ['backend/tests/x.test.ts']]) {
+    const r = checkPatch(patch, before, after, { humanUpdates });
+    assert.ok(r.violations.some((v) => v.includes('weak matcher')), r.violations.join('; '));
+  }
+});
+
+test('guard accepts a declared edit plus a weak-matcher test appended in its own hunk', () => {
+  const lines = ["it('a', () => { expect(f()).toBe(3); });", ...Array.from({ length: 8 }, (_, i) => `// ${i}`)];
+  const add = "it('b', () => { expect(g()).toBeUndefined(); });";
+  const afterLines = ["it('a', () => { expect(f()).toBe(4); });", ...lines.slice(1), add];
+  const { before, after } = existingFile(`${lines.join('\n')}\n`, `${afterLines.join('\n')}\n`);
+  const patch = hunkPatch([
+    ['@@ -1,2 +1,2 @@', `-${lines[0]}`, `+${afterLines[0]}`, ` ${lines[1]}`],
+    ['@@ -9 +9,2 @@', ` ${lines[8]}`, `+${add}`],
+  ]);
+  const r = checkPatch(patch, before, after, { humanUpdates: ['backend/tests/x.test.ts'] });
+  assert.equal(r.ok, true, r.violations.join('; '));
+});
+
 // --- scope ---------------------------------------------------------------------------------------
 
 const src = { path: 'backend/src/api/health.ts', kind: 'backend-src', added: 3, removed: 1 };
