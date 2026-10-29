@@ -152,7 +152,9 @@ describe('start', () => {
     expect(double.$disconnect).toHaveBeenCalledTimes(1);
   });
 
-  it('rejects and disconnects when the port cannot be bound', async () => {
+  // Only the cleanup is pinned here. The error type is not asserted: today start() rejects with a TypeError that
+  // hides the EADDRINUSE error (known defect, reported in the PR description, not fixed here).
+  it('disconnects the database and rejects when the server cannot start listening', async () => {
     const occupied = createServer();
     servers.push(occupied);
     await new Promise<void>((resolve) => occupied.listen(0, '0.0.0.0', resolve));
