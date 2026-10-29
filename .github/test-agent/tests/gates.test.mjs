@@ -47,6 +47,14 @@ test('guard refuses paths outside the allow-list and denied paths', () => {
   assert.equal(checkPatch(newFile('frontend/src/app.config.ts', ['x'])).ok, false);
 });
 
+test('guard refuses the global frontend setup file', () => {
+  for (const patch of [newFile('frontend/src/test/setup.ts', ['x']), modified('frontend/src/test/setup.ts', ['x'], ['y'])]) {
+    const r = checkPatch(patch);
+    assert.equal(r.ok, false);
+    assert.ok(r.violations.some((v) => v.includes('denied path (frontend/src/test/setup.ts)')), r.violations.join('; '));
+  }
+});
+
 test('guard accepts a test file for a config module', () => {
   for (const p of ['backend/tests/config.test.ts', 'frontend/src/lib/config.test.tsx']) {
     const r = checkPatch(newFile(p, ["it('a', () => {});"]));
