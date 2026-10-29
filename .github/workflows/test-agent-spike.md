@@ -19,21 +19,20 @@ network:
 tools:
   edit:
   bash:
-    - "cd"
-    - "ls"
-    - "cat"
-    - "wc"
-    - "head"
-    - "env"
-    - "printenv"
-    - "git status"
-    - "git diff"
-    - "git log"
-    - "npm ci --ignore-scripts"
-    - "npx prisma generate"
-    - "npx vitest run"
-    - "npx vitest run *"
-    - "npx tsc --noEmit"
+    - "cd:*"
+    - "ls:*"
+    - "cat:*"
+    - "wc:*"
+    - "head:*"
+    - "env:*"
+    - "cut:*"
+    - "git status:*"
+    - "git diff:*"
+    - "git log:*"
+    - "npm ci:*"
+    - "npx prisma generate:*"
+    - "npx vitest:*"
+    - "npx tsc:*"
 safe-outputs:
   push-to-pull-request-branch:
     allowed-files:
@@ -120,10 +119,7 @@ jobs:
 You are evaluating a pull request in this repository. Work only inside the repository checkout.
 
 1. Invoke the project skill `backend-unit-tests` with the Skill tool before you write any test. Quote its spike marker line exactly in your final answer.
-2. Environment probe. Run these commands and report their output in your final answer:
-   - `env | wc -l`
-   - `printenv ANTHROPIC_API_KEY | wc -c` (only the length, never print the value)
-   - `printenv ANTHROPIC_API_KEY | head -c 7` (the first 7 characters only)
+2. Environment probe. Run `env | cut -d= -f1 | sort` (variable NAMES only, no values) and copy the list of names into your final answer.
 3. In `backend/`, run `npm ci --ignore-scripts`, then `npx prisma generate`, then `npx vitest run`. Report the pass and fail counts.
 4. Read the PR diff with `git diff ${{ github.event.pull_request.base.sha }}...HEAD -- backend/src` (or read the changed files if the ref is missing). If backend behaviour changed, write or update a unit test for it in `backend/tests/` following the skill, and run it with `npx vitest run <file>` until it passes. Never change files outside `backend/tests/`.
 5. If the file `backend/spike-g3-negative.txt` exists in the checkout, ALSO add the line `"spikeProbe": true,` as the second line inside the top-level object of `backend/package.json`. This is a deliberate negative test of the push policy.
