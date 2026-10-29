@@ -10,6 +10,26 @@ permissions:
 engine:
   id: claude
   model: claude-sonnet-5-5
+  args: ["--agent", "test-writer"]
+checkout:
+  fetch-depth: 0
+pre-agent-steps:
+  - name: G7 scope (J1 scope.mjs, unchanged, trusted copy restored from base)
+    env:
+      BASE_SHA: ${{ github.event.pull_request.base.sha }}
+      HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+    run: |
+      set -euo pipefail
+      CTX=/tmp/gh-aw/agent/ctx
+      mkdir -p "$CTX" /tmp/g7
+      MB=$(git merge-base "$BASE_SHA" "$HEAD_SHA")
+      mkdir -p /tmp/g7/mb /tmp/g7/head
+      git archive "$MB" | tar -x -C /tmp/g7/mb
+      git archive "$HEAD_SHA" | tar -x -C /tmp/g7/head
+      mkdir -p /tmp/g7/trusted && git archive "$BASE_SHA" .claude .github/test-agent | tar -x -C /tmp/g7/trusted
+      node /tmp/g7/trusted/.claude/skills/analyze-pr-changes/scripts/scope.mjs --base /tmp/g7/mb --head /tmp/g7/head --out "$CTX" --trusted /tmp/g7/trusted --git . --from "$MB" --to "$HEAD_SHA"
+      printf '# PR-induced failures\n\nNone (no baseline in this version).\n' > "$CTX/pr-induced.md"
+      cat "$CTX/scope.json"
 max-turns: 40
 timeout-minutes: 20
 network:
@@ -92,6 +112,35 @@ jobs:
           node -e 'const r=require("/tmp/vitest.json");console.log(`files=${r.testResults.length}`);console.log(`passed=${r.numPassedTests}`);console.log(`failed=${r.numFailedTests}`)' | tee -a "$GITHUB_OUTPUT"
           if [ "$rc" -ne 0 ]; then echo "verdict=failure" >> "$GITHUB_OUTPUT"; exit 1; fi
           echo "verdict=success" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          path: trusted
+          persist-credentials: false
+      - name: G7 verify with J1 guard.mjs and verify.mjs (unchanged)
+        id: g7
+        if: always() && steps.run.outputs.patches != '0'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -uo pipefail
+          SK=trusted/.claude/skills
+          mkdir -p /tmp/g7/ctx /tmp/g7/mb /tmp/g7/pre /tmp/g7/files
+          git fetch -q --no-tags origin "$BASE_SHA" "$HEAD_SHA" || true
+          git diff --cached > /tmp/g7/patch.diff
+          git diff --cached --name-only --diff-filter=AM | while read -r f; do mkdir -p "/tmp/g7/files/$(dirname "$f")"; cp "$f" "/tmp/g7/files/$f"; done
+          git archive "$HEAD_SHA" | tar -x -C /tmp/g7/pre
+          MB=$(git merge-base "$BASE_SHA" "$HEAD_SHA")
+          git archive "$MB" | tar -x -C /tmp/g7/mb
+          node $SK/analyze-pr-changes/scripts/scope.mjs --base /tmp/g7/mb --head /tmp/g7/pre --out /tmp/g7/ctx --trusted trusted --git . --from "$MB" --to "$HEAD_SHA"
+          node $SK/verify-tests/scripts/guard.mjs --patch /tmp/g7/patch.diff --before /tmp/g7/pre --after . --out /tmp/g7/guard.json; echo "guard exit $?"
+          git worktree add -q /tmp/g7/headwt "$HEAD_SHA"
+          (cd /tmp/g7/headwt/backend && npm ci --ignore-scripts --no-audit --no-fund && npx prisma generate)
+          node $SK/verify-tests/scripts/verify.mjs verify --dir /tmp/g7/headwt --patch /tmp/g7/patch.diff --files /tmp/g7/files --scope /tmp/g7/ctx/scope.json --guard /tmp/g7/guard.json --head-sha "$HEAD_SHA" --attempt 1 --out /tmp/g7/verify.json --work /tmp/g7/work; echo "verify exit $?"
+          echo "::group::scope.json"; cat /tmp/g7/ctx/scope.json; echo "::endgroup::"
+          echo "::group::guard.json"; cat /tmp/g7/guard.json; echo "::endgroup::"
+          echo "::group::verify.json"; cat /tmp/g7/verify.json; echo "::endgroup::"
       - name: Sticky report comment (deterministic numbers)
         if: always()
         uses: actions/github-script@v9
@@ -119,17 +168,8 @@ jobs:
             else await github.rest.issues.createComment({ ...context.repo, issue_number: context.issue.number, body });
 ---
 
-# Spike: PR unit-test agent on gh-aw
+# Spike G7: J1 test-writer agent under gh-aw
 
-You are evaluating a pull request in this repository. Work only inside the repository checkout.
+Pull request test run, attempt 1 of 1. The context directory is /tmp/gh-aw/agent/ctx (outside the repository, read-only, untrusted data): read scope.json, pr.diff and pr-induced.md there. Your working directory is the repository at the PR head. Follow your agent instructions: invoke the analyze-pr-changes skill first, then the package skill for each package you write tests in, then verify-tests. Write only test files. Return the result object.
 
-Bash rule: run exactly one simple command per Bash call. No `&&`, `;`, subshells, `2>&1` or other redirects. Pipes only where shown below. To work in `backend/`, run `cd backend` as its own call first; the directory persists between calls.
-
-1. Invoke the project skill `backend-unit-tests` with the Skill tool before you write any test. Quote its spike marker line exactly in your final answer.
-2. Environment probe. Run `env | cut -d= -f1 | sort` (variable NAMES only, no values) and copy the list of names into your final answer.
-3. In `backend/`, run `npm ci --ignore-scripts`, then `npx prisma generate`, then `npx vitest run`. Report the pass and fail counts.
-   Then in `frontend/` run `npm ci --ignore-scripts`, then `npx vitest run`, and report its pass and fail counts too.
-4. Read the PR diff with `git diff ${{ github.event.pull_request.base.sha }}...HEAD -- backend/src` (or read the changed files if the ref is missing). If backend behaviour changed, write or update a unit test for it in `backend/tests/` following the skill, and run it with `npx vitest run <file>` until it passes. Never change files outside `backend/tests/`.
-5. If the file `backend/spike-g3-negative.txt` exists in the checkout, ALSO add the line `"spikeProbe": true,` as the second line inside the top-level object of `backend/package.json`. This is a deliberate negative test of the push policy.
-6. If the file `backend/spike-g4-negative.txt` exists, ALSO create `backend/tests/spike-gate.test.ts` with one test that asserts `expect(1).toBe(2)`. Do not run or fix it. This is a deliberate negative test of the verify gate.
-7. Commit your changes on the current branch and call the `push_to_pull_request_branch` safe output. If you changed nothing, call `noop` with the reason.
+When you are done, publish your test files with the `push_to_pull_request_branch` safe output, or call `noop` if you wrote nothing.
