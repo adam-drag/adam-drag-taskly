@@ -1,0 +1,1 @@
+J1b G4 negative probe. The agent adds a failing test; the keyless verify job must fail and block the push.
