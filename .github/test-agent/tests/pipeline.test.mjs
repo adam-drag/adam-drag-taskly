@@ -143,7 +143,16 @@ if (cov && cfg.coverage !== false) {
   fs.writeFileSync(path.join(dir, 'coverage-summary.json'), JSON.stringify({ total: { lines: pct, statements: pct, branches: pct, functions: pct } }));
 }
 if (isRerun && cfg.killRerun) process.kill(process.pid, 'SIGKILL');
+if (!isRerun && cfg.killFull) process.kill(process.pid, 'SIGKILL');
 process.exit(failedN ? 1 : isRerun ? (cfg.rerunExit ?? 0) : 0);
+`;
+
+// Fake tsc: prints the tscErrors lines from fake.json and exits 2 when there are any.
+const FAKE_TSC = `#!/usr/bin/env node
+const fs = require('node:fs'), path = require('node:path');
+const errs = JSON.parse(fs.readFileSync(path.join(process.cwd(), 'fake.json'), 'utf8')).tscErrors ?? [];
+if (errs.length) process.stdout.write(errs.join('\\n') + '\\n');
+process.exit(errs.length ? 2 : 0);
 `;
 
 const newFile = (path, lines) => [
@@ -163,7 +172,7 @@ function verifyFixture(fake, { existing = [], fixture = false, baseline = null }
   commit(dir, 'Adam', 'base');
   writeFileSync(join(dir, 'backend/fake.json'), JSON.stringify(fake));
   writeFileSync(join(dir, 'backend/node_modules/.bin/vitest'), FAKE_VITEST);
-  writeFileSync(join(dir, 'backend/node_modules/.bin/tsc'), '#!/bin/sh\nexit 0\n');
+  writeFileSync(join(dir, 'backend/node_modules/.bin/tsc'), FAKE_TSC);
   chmodSync(join(dir, 'backend/node_modules/.bin/vitest'), 0o755);
   chmodSync(join(dir, 'backend/node_modules/.bin/tsc'), 0o755);
   const good = 'backend/tests/x.test.ts', pb = 'backend/tests/x.probable-bug.test.ts';
@@ -179,12 +188,14 @@ function verifyFixture(fake, { existing = [], fixture = false, baseline = null }
   writeFileSync(join(root, 'scope.json'), JSON.stringify({ packages: ['backend'], files: [] }));
   writeFileSync(join(root, 'guard.json'), JSON.stringify({ ok: true, violations: [] }));
   writeFileSync(join(root, 'result.json'), JSON.stringify({ probable_bugs: [{ title: 'wrong comparison', test_file: pb }] }));
-  const args = { dir, files, work, patch: join(root, 'patch.diff'), scope: join(root, 'scope.json'), guard: join(root, 'guard.json'), result: join(root, 'result.json'), attempt: '1', out: join(root, 'verify.json') };
+  const args = { dir, files, work, patch: join(root, 'patch.diff'), scope: join(root, 'scope.json'), guard: join(root, 'guard.json'), result: join(root, 'result.json'), attempt: '1', out: join(root, 'verify.json'), feedback: join(root, 'feedback.md') };
   if (baseline) { writeFileSync(join(root, 'baseline.json'), JSON.stringify(baseline)); args.baseline = join(root, 'baseline.json'); }
   const log = console.log;
   console.log = () => {};
   try { verify(args); } finally { console.log = log; }
-  return JSON.parse(readFileSync(args.out, 'utf8'));
+  const v = JSON.parse(readFileSync(args.out, 'utf8'));
+  Object.defineProperty(v, 'feedbackText', { value: readFileSync(args.feedback, 'utf8') });
+  return v;
 }
 
 test('verify splits off probable-bug files and opens the gate for the rest', () => {
@@ -207,6 +218,20 @@ test('verify treats a killed rerun as infrastructure and closes the gate', () =>
   const v = verifyFixture({ killRerun: true });
   assert.ok(v.classes.infrastructure.some((m) => m.includes('was killed (SIGKILL)')), v.classes.infrastructure.join('; '));
   assert.equal(v.gate.publish, false);
+});
+
+test('verify treats a killed full suite as infrastructure even with a JSON report', () => {
+  const v = verifyFixture({ killFull: true });
+  assert.ok(v.classes.infrastructure.some((m) => m.includes('backend: full suite was killed (SIGKILL)')), v.classes.infrastructure.join('; '));
+  assert.equal(v.gate.publish, false);
+  assert.equal(v.trigger_attempt_2, false);
+});
+
+test('verify puts a tsc error in a changed fixture into the attempt-2 feedback', () => {
+  const v = verifyFixture({ tscErrors: ["tests/helpers.ts(1,14): error TS2322: Type 'number' is not assignable to type 'string'."] }, { fixture: true });
+  assert.equal(v.gate.publish, false);
+  assert.equal(v.trigger_attempt_2, true);
+  assert.match(v.feedbackText, /## tsc errors in other files\nbackend\/tests\/helpers\.ts tsc TS2322 line 1: Type 'number' is not assignable/);
 });
 
 test('verify treats a missing coverage summary as infrastructure', () => {
