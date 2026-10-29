@@ -56,6 +56,15 @@ test('report copies the bot commit status into the verdict', async () => {
   assert.equal(await fetchBotStatus('a'.repeat(40), async () => ({ status: 200, json: [] })), null);
 });
 
+test('report fails with the reason when the status list cannot be read', async () => {
+  const scope = { decision: 'skip', skip_kind: 'bot-commit', reason: 'bot head', files: [] };
+  await assert.rejects(fetchBotStatus('a'.repeat(40), async () => ({ status: 502, json: null })), /list statuses: HTTP 502/);
+  const v = render({ scope, botStatus: null, botStatusError: 'list statuses: HTTP 502' }).verdict;
+  assert.equal(v.state, 'failure');
+  assert.equal(v.class, 'infrastructure');
+  assert.match(v.headline, /stage: report.*HTTP 502/);
+});
+
 // --- verify() ------------------------------------------------------------------------------------
 
 const FAKE_VITEST = `#!/usr/bin/env node
@@ -80,6 +89,7 @@ if (cov && cfg.coverage !== false) {
   const pct = { pct: 100 };
   fs.writeFileSync(path.join(dir, 'coverage-summary.json'), JSON.stringify({ total: { lines: pct, statements: pct, branches: pct, functions: pct } }));
 }
+if (isRerun && cfg.killRerun) process.kill(process.pid, 'SIGKILL');
 process.exit(failedN ? 1 : isRerun ? (cfg.rerunExit ?? 0) : 0);
 `;
 
@@ -130,6 +140,12 @@ test('verify splits off probable-bug files and opens the gate for the rest', () 
 test('verify treats a rerun that exits non-zero with every file passing as infrastructure', () => {
   const v = verifyFixture({ rerunExit: 1 });
   assert.ok(v.classes.infrastructure.some((m) => m.includes('exited 1 with every candidate file passing')));
+  assert.equal(v.gate.publish, false);
+});
+
+test('verify treats a killed rerun as infrastructure and closes the gate', () => {
+  const v = verifyFixture({ killRerun: true });
+  assert.ok(v.classes.infrastructure.some((m) => m.includes('was killed (SIGKILL)')), v.classes.infrastructure.join('; '));
   assert.equal(v.gate.publish, false);
 });
 

@@ -23,6 +23,7 @@ const LABEL = {
 //   *Job: the GitHub job result ('success' | 'failure' | 'cancelled' | 'skipped' | undefined)
 //   gen:  gen.json from the generate job; verify: verify.json; publish: publish.json
 // publish may be { status: 'pending' } when the publish job asks which status to set.
+// botStatusError: set when listing the head's statuses failed.
 // botStatus: the test-agent/verified status ({ state, description }) of the head commit when the scope
 //   skipped because the head is a bot commit; null when it has none.
 export function computeVerdict(i) {
@@ -35,6 +36,7 @@ export function computeVerdict(i) {
   if (i.scope.decision === 'skip' && i.scope.skip_kind === 'bot-commit') {
     // An approved run on a bot commit takes the state of that commit's own status, or fails without one.
     const s = i.botStatus;
+    if (i.botStatusError) return fail('infrastructure', 'report', `could not read the bot commit's test-agent/verified status (${i.botStatusError})`);
     if (!s) return fail('infrastructure', 'scope', 'head is a test-agent bot commit without a test-agent/verified status');
     const text = `head is a test-agent bot commit; its test-agent/verified status is ${s.state}${s.description ? ` (${s.description})` : ''}`;
     if (s.state === 'success') return ok('bot-commit', text);

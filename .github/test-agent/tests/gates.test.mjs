@@ -331,3 +331,51 @@ test('publish records a status write that throws after the ref moved', async () 
   assert.equal(out.status, 'published');
   assert.match(out.status_error, /network down/);
 });
+
+test('publish keeps the commit sha when the ref PATCH response is lost but the ref moved', async () => {
+  const { dir, verify, patchText } = fixture();
+  const { files } = checkCandidate({ verify, candidateDir: dir, patchText, testedSha: TESTED });
+  const { api } = mockApi();
+  const lost = async (method, path, body) => {
+    if (method === 'PATCH' && path.startsWith('/git/refs/heads/')) throw new Error('socket hang up');
+    if (method === 'GET' && path.startsWith('/git/ref/heads/')) return { status: 200, json: { object: { sha: '9'.repeat(40) } } };
+    return api(method, path, body);
+  };
+  const out = await publish({ api: lost, verify, files, testedSha: TESTED, branch: 'feat/x', prNumber: '8', runUrl: 'u', verdictInputs: { scope: scopeGen, gen, verify } });
+  assert.equal(out.status, 'published');
+  assert.equal(out.commit_sha, '9'.repeat(40));
+  assert.match(out.ref_update.message, /socket hang up/);
+  assert.equal(out.commit_status.http, 201);
+});
+
+test('publish records the commit sha and an error when the PATCH response is lost and the ref did not move', async () => {
+  const { dir, verify, patchText } = fixture();
+  const { files } = checkCandidate({ verify, candidateDir: dir, patchText, testedSha: TESTED });
+  const { api, calls } = mockApi();
+  const lost = async (method, path, body) => {
+    if (method === 'PATCH' && path.startsWith('/git/refs/heads/')) throw new Error('socket hang up');
+    if (method === 'GET' && path.startsWith('/git/ref/heads/')) return { status: 200, json: { object: { sha: TESTED } } };
+    return api(method, path, body);
+  };
+  const out = await publish({ api: lost, verify, files, testedSha: TESTED, branch: 'feat/x', prNumber: '8', runUrl: 'u', verdictInputs: { scope: scopeGen, gen, verify } });
+  assert.equal(out.status, 'error');
+  assert.equal(out.commit_sha, '9'.repeat(40));
+  assert.match(out.reason, /is not on the branch/);
+  assert.ok(!calls.some((c) => c.path.startsWith('/statuses/')), 'no status on a commit that is not on the branch');
+});
+
+test('publish keeps recorded steps when a later call throws', async () => {
+  const { dir, verify, patchText } = fixture();
+  const { files } = checkCandidate({ verify, candidateDir: dir, patchText, testedSha: TESTED });
+  const { api } = mockApi();
+  const out = {};
+  const boom = async (method, path, body) => {
+    if (method === 'PATCH') throw new Error('socket hang up');
+    if (method === 'GET' && path.startsWith('/git/ref/')) throw new Error('still down');
+    return api(method, path, body);
+  };
+  await publish({ api: boom, verify, files, testedSha: TESTED, branch: 'feat/x', prNumber: '8', runUrl: 'u', verdictInputs: { scope: scopeGen, gen, verify }, out });
+  assert.equal(out.status, 'error');
+  assert.equal(out.commit_sha, '9'.repeat(40));
+  assert.match(out.reason, /ref read back: unknown/);
+});

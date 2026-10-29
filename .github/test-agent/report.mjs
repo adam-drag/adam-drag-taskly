@@ -234,7 +234,7 @@ export async function main(argv) {
   if (a.mode === 'render') {
     const inputs = loadInputs(a.dir);
     if (inputs.scope?.decision === 'skip' && inputs.scope?.skip_kind === 'bot-commit') {
-      try { inputs.botStatus = await fetchBotStatus(process.env.TESTED_SHA); } catch (e) { inputs.botStatus = null; console.error(String(e?.message ?? e)); }
+      try { inputs.botStatus = await fetchBotStatus(process.env.TESTED_SHA); } catch (e) { inputs.botStatus = null; inputs.botStatusError = String(e?.message ?? e).slice(0, 200); console.error(inputs.botStatusError); }
     }
     const { verdict, body } = render(inputs, { testedSha: process.env.TESTED_SHA, runUrl: process.env.RUN_URL });
     const safe = withheldIfSecret(body);
