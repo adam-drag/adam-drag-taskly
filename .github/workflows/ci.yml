@@ -1,0 +1,47 @@
+# Plain CI for both packages: install without lifecycle scripts, generate the Prisma client, type check
+# and run the tests with the configured coverage thresholds. No secrets. No format gate: the frontend's
+# own format:check already fails on main on two untouched files.
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        package: [backend, frontend]
+    defaults:
+      run:
+        working-directory: ${{ matrix.package }}
+    env:
+      TZ: UTC
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '22'
+          package-manager-cache: false
+      - name: Install
+        run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Generate the Prisma client
+        if: matrix.package == 'backend'
+        run: npx prisma generate
+      - name: Type check
+        run: npm run typecheck
+      - name: Tests with coverage
+        run: npm run test:coverage -- --maxWorkers=4
