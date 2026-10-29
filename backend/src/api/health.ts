@@ -5,7 +5,7 @@ export function createHealthRouter(database: Database) {
   const router = Router();
   router.get('/health', async (req, res) => {
     await database.todo.findFirst({ select: { id: true } });
-    res.json({ status: 'ok' });
+    res.json({ status: 'ok', service: 'taskly-api' });
   });
   return router;
 }
