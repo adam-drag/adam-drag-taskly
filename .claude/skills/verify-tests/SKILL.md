@@ -14,7 +14,7 @@ You cannot run anything. After you finish, the pipeline runs two scripts from th
 - At most 400 added lines per file and 1500 in total.
 - No `.only`, `.skip`, `.todo`, `.fails`, `skipIf`, `runIf`, `xit`, `fit`.
 - **No weakening** in an existing (human) test file you edited: the number of test cases (`it(`, `test(`, `it.each`) and of `expect(` calls must not go down.
-- In an existing test file that is not in `human_test_updates`, remove only blank lines, import lines and lines of closing brackets. If your edit removes or changes any line of an existing test file, do not add a weak matcher (`toBeDefined`, `toBeTruthy`, `toBeFalsy`, `toBeUndefined`, `expect.any`, `expect.anything`) anywhere in that file, also not in a new test. The guard refuses the whole file. Use exact matchers.
+- In an existing test file that is not in `human_test_updates`, remove only blank lines, import statements and lines of closing brackets. The guard refuses the removal of a line that holds only a name, such as an `it.each` row or a name inside a multi-line import. If your edit removes or changes any line of an existing test file, do not add a weak matcher (`toBeDefined`, `toBeTruthy`, `toBeFalsy`, `toBeUndefined`, `expect.any`, `expect.anything`) anywhere in that file, also not in a new test. The guard refuses the whole file. Use exact matchers.
 - A secret scan runs on the patch and on your result.
 
 ## 2. Verification (`scripts/verify.mjs`), keyless, per package

@@ -34,8 +34,11 @@ const BANNED = [
 ];
 const TEST_CASE = /\b(?:it|test)(?:\.(?:concurrent|sequential))?(?:\.each)?\s*[(`]/g;
 const EXPECT = /\bexpect(?:\.soft)?\s*\(/g;
+// Lines an undeclared edit may remove: blank lines, single-line import statements, the closing line of a
+// multi-line import, and lines of closing brackets only. A bare identifier line is not removable, because it
+// can be an it.each row or a shorthand property; a name removed inside a multi-line import is refused too.
+const REMOVABLE = /^\s*$|^\s*import\s+(?:type\s+)?(?:[\w$*{]|['"]).*$|^\s*\}\s*from\s+['"][^'"]+['"];?\s*$|^\s*[)}\]][)}\];,\s]*$/;
 // An assertion on a line: expect(...) or a chained matcher such as .toBe( / .rejects.
-const REMOVABLE = /^\s*$|^\s*import\b|^\s*[\w$,\s{}]*\}?\s*from\s+['"][^'"]+['"];?\s*$|^\s*[A-Za-z_$][\w$]*,?\s*$|^\s*[)}\]][)}\];,\s]*$/;
 const ASSERTION = /\bexpect(?:\.soft)?\s*\(|\.(?:to[A-Z]\w*|rejects|resolves)\b/;
 // Matchers that accept almost any value. Replacing an existing assertion with one of them weakens it.
 const WEAK_MATCHER = /\.(?:toBeDefined|toBeTruthy|toBeFalsy|toBeUndefined)\s*\(|\bexpect\.(?:any|anything)\s*\(/;

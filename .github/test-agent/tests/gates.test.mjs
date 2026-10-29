@@ -140,7 +140,18 @@ test('guard refuses an undeclared edit that drops an it.each row, and accepts an
   const patch = hunkPatch([['@@ -1,4 +1,3 @@', ' it.each([', '   [1, 2],', '-  [2, 4],', " ])('doubles %i', (a, b) => { expect(a * 2).toBe(b); });"]]);
   const r = checkPatch(patch, dirs.before, dirs.after);
   assert.ok(r.violations.some((v) => v.includes('lines removed from an existing test file that is not in human_test_updates: [2, 4],')), r.violations.join('; '));
-  const imp = existingFile("import { expect, it } from 'vitest';\nit('a', () => { expect(1).toBe(1); });\n", "import { expect, it, vi } from 'vitest';\nit('a', () => { expect(1).toBe(1); });\nit('b', () => { expect(vi.fn()).not.toHaveBeenCalled(); });\n");
+  // A row that is a bare identifier (or a scalar such as null) is a dropped case too.
+  for (const row of ['caseB,', 'null,', 'false,']) {
+    const idDirs = existingFile(`it.each([\n  caseA,\n  ${row}\n])('handles %s', (c) => { expect(f(c)).toBe(1); });\n`, "it.each([\n  caseA,\n])('handles %s', (c) => { expect(f(c)).toBe(1); });\n");
+    const idPatch = hunkPatch([['@@ -1,4 +1,3 @@', ' it.each([', '   caseA,', `-  ${row}`, " ])('handles %s', (c) => { expect(f(c)).toBe(1); });"]]);
+    const idR = checkPatch(idPatch, idDirs.before, idDirs.after);
+    assert.ok(idR.violations.some((v) => v.includes(`not in human_test_updates: ${row}`)), `${row}: ${idR.violations.join('; ')}`);
+  }
+  // A property named import inside an expected object is not an import line.
+  const prop = existingFile("it('a', () => { expect(f()).toEqual({\n  import: 'x',\n  b: 1,\n}); });\n", "it('a', () => { expect(f()).toEqual({\n  b: 1,\n}); });\n");
+  const propR = checkPatch(hunkPatch([['@@ -1,4 +1,3 @@', " it('a', () => { expect(f()).toEqual({", "-  import: 'x',", '   b: 1,', ' }); });']]), prop.before, prop.after);
+  assert.ok(propR.violations.some((v) => v.includes("not in human_test_updates: import: 'x',")), propR.violations.join('; '));
+  const imp =existingFile("import { expect, it } from 'vitest';\nit('a', () => { expect(1).toBe(1); });\n", "import { expect, it, vi } from 'vitest';\nit('a', () => { expect(1).toBe(1); });\nit('b', () => { expect(vi.fn()).not.toHaveBeenCalled(); });\n");
   const ok = checkPatch(hunkPatch([['@@ -1,2 +1,3 @@', "-import { expect, it } from 'vitest';", "+import { expect, it, vi } from 'vitest';", " it('a', () => { expect(1).toBe(1); });", "+it('b', () => { expect(vi.fn()).not.toHaveBeenCalled(); });"]]), imp.before, imp.after);
   assert.equal(ok.ok, true, ok.violations.join('; '));
 });
