@@ -119,9 +119,9 @@ jobs:
         run: |
           cd work
           rm -rf .claude .github .mcp.json
-          find . -path ./.git -prune -o \( -name CLAUDE.md -o -name CLAUDE.local.md -o -name AGENTS.md -o -name .mcp.json \) -type f -print -delete
+          find . -path ./.git -prune -o \( -name CLAUDE.md -o -name CLAUDE.local.md -o -name AGENTS.md -o -name .mcp.json \) -type f -print -exec rm -f {} +
           find . -path ./.git -prune -o -type d -name .claude -prune -print -exec rm -rf {} +
-          find . -path ./.git -prune -o -type l -print -delete
+          find . -path ./.git -prune -o -type l -print -exec rm -f {} +
           mkdir -p .claude
           cp -R ../trusted/.claude/agents ../trusted/.claude/skills .claude/
           cd ..
@@ -327,10 +327,28 @@ jobs:
           ref: ${{ github.event.pull_request.base.sha }}
           path: trusted
           persist-credentials: false
+      # One step per artifact, each to a fixed path, so the layout does not depend on how many artifacts
+      # the run produced. A missing artifact is fine here.
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         continue-on-error: true
         with:
-          path: arts
+          name: scope
+          path: arts/scope
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        continue-on-error: true
+        with:
+          name: gen-1
+          path: arts/gen-1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        continue-on-error: true
+        with:
+          name: verify-1
+          path: arts/verify-1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        continue-on-error: true
+        with:
+          name: publish
+          path: arts/publish
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: '22'
