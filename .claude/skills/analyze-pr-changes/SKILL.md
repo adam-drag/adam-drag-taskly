@@ -16,7 +16,7 @@ description: Classify every file a PR changes in the Taskly repo (behaviour, ref
    - **non-functional**: types only, comments, formatting, logging text nobody asserts. No tests;
    - **test-only / docs / config**: no tests (`kind` in scope.json: `backend-test`, `frontend-test`, `docs`, `config`).
 3. For each behaviour change, list the inputs whose result changed. That list is what your tests must pin: at least the changed case, the boundary, and the unchanged neighbour case.
-4. Find the existing tests. `existing_tests` in scope.json lists test files that import the src file. Also Grep for the function or route name in `backend/tests/` and `frontend/src/**/*.test.*`, and check tests of callers (for example `router.test.ts` exercises validators through HTTP).
+4. Find the existing tests. `existing_tests` in scope.json lists test files that import the src file. `agent_authored_files` lists files that earlier test-agent commits on this PR wrote (author `github-actions[bot]`, subject `test(agent):`). Extend or update those files instead of adding a second file for the same unit; if they already cover the change, write nothing. Also Grep for the function or route name in `backend/tests/` and `frontend/src/**/*.test.*`, and check tests of callers (for example `router.test.ts` exercises validators through HTTP).
 5. Find the **documented contract** for the changed code, in this order, and quote it with `file:line`:
    - JSDoc and comments in the changed file and in the types it implements (`backend/src/features/todos/types.ts` holds `TodoStore`);
    - `backend/openapi.json` (status codes, parameters, response shapes; served at `/openapi.json` and `/docs`);
