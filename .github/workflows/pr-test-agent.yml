@@ -184,8 +184,11 @@ jobs:
           else if (fs.existsSync('out/files1.refused')) g = { status: 'guard-fail', violations: fs.readFileSync('out/files1.refused', 'utf8').trim().split('\n') };
           else if (!guard.ok) g = { status: 'guard-fail', violations: guard.violations };
           else if (!patch.trim()) g = { status: 'no-op', reason: result.reason };
-          g.agent_decision = result?.decision ?? null;
-          g.probable_bugs = (result?.probable_bugs ?? []).map((b) => String(b.title ?? '').slice(0, 200));
+          // After a secret-scan hit gen.json carries no model text at all.
+          if (g.status !== 'secret-hit') {
+            g.agent_decision = result?.decision ?? null;
+            g.probable_bugs = (result?.probable_bugs ?? []).map((b) => String(b.title ?? '').slice(0, 200));
+          }
           fs.writeFileSync('out/gen.json', JSON.stringify(g, null, 2) + '\n');
           console.log(JSON.stringify(g));
           EOF
@@ -376,7 +379,10 @@ jobs:
           cat out/report.md >> "$GITHUB_STEP_SUMMARY"
           if [ "$SAME_REPO" = "true" ]; then
             PUBLISHED=$(node -e 'try{const p=require("./arts/publish/publish.json"); if(p.status==="published") console.log(p.commit_sha)}catch{}')
-            node "$REPORT" post --body out/report.md --published-sha "$PUBLISHED" || POST_FAILED=1
+            node "$REPORT" post --body out/report.md --published-sha "$PUBLISHED" || {
+              POST_FAILED=1
+              printf '\n**failure: infrastructure (stage: report)**: the sticky comment was not posted. This summary is the report.\n' >> "$GITHUB_STEP_SUMMARY"
+            }
           else
             echo "Fork PR: no comment (read-only token). The job summary holds the report." >> "$GITHUB_STEP_SUMMARY"
           fi

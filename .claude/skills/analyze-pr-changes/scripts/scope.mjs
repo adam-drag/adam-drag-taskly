@@ -214,13 +214,14 @@ export function main(argv) {
     commits = gitCommits(resolve(args.git), args.from, args.to);
   }
   const headCommit = commits.find((c) => c.sha === args.to) ?? commits[0] ?? null;
-  const { decision, reason } = decide({ files, fork: args.fork, headCommit, trustedMissing });
+  const { decision, reason, skip_kind: skipKind } = decide({ files, fork: args.fork, headCommit, trustedMissing });
   const packages = [...new Set(files
     .filter((f) => ['backend-src', 'frontend-src', 'backend-test', 'frontend-test'].includes(f.kind))
     .map((f) => f.kind.split('-')[0]))].sort();
   const scope = {
     version: 1,
     decision,
+    ...(skipKind ? { skip_kind: skipKind } : {}),
     reason,
     llm_call_needed: decision === 'generate',
     packages,

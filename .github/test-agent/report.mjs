@@ -169,7 +169,7 @@ export function render(i, { testedSha, runUrl } = {}) {
   const r = i.meta?.result;
   if (r) out.push(`- attempt 1: model \`${cell(i.meta.init?.model ?? 'n/a', 60)}\`, cost $${Number(r.total_cost_usd ?? 0).toFixed(4)}, turns ${r.num_turns}, duration ${(Number(r.duration_ms ?? 0) / 1000).toFixed(1)} s, result \`${cell(r.subtype, 40)}\`${r.permission_denials?.length ? `, permission denials ${r.permission_denials.length}` : ''}`);
   const pub = i.publish;
-  out.push(`- tested SHA \`${short(testedSha)}\`; verified tree \`${short(ver?.candidate_tree_sha)}\`; pushed SHA \`${short(pub?.commit_sha && pub.status === 'published' ? pub.commit_sha : null)}\`; publish ${pub ? cell(pub.status, 20) : 'not run'}${pub?.reason ? ` (${cell(pub.reason, 200)})` : ''}; attempt 1 of 1`);
+  out.push(`- tested SHA \`${short(testedSha)}\`; verified tree \`${short(ver?.candidate_tree_sha)}\`; pushed SHA \`${short(pub?.commit_sha && pub.status === 'published' ? pub.commit_sha : null)}\`; publish ${pub ? cell(pub.status, 20) : 'not run'}${pub?.reason ? ` (${cell(pub.reason, 200)})` : ''}${pub?.status_error ? `; ${cell(pub.status_error, 120)}` : ''}; attempt 1 of 1`);
   if (runUrl) out.push(`- run: ${runUrl}`);
   out.push('');
   return { verdict: v, body: `${out.join('\n')}\n` };
