@@ -21,7 +21,7 @@ You cannot run anything. After you finish, the pipeline runs two scripts from th
 - `tsc --noEmit` for the package (tests are included in both tsconfigs). Any type error in your file fails it.
 - The full suite with the JSON reporter, read per file.
 - Each changed test file runs **3 times**. Only 3/3 counts as passing; 1/3 or 2/3 is "flaky". So no dependence on the current date, test order, real timers, randomness or the network.
-- Coverage from `coverage-summary.json`, before (PR head) and after (with your patch), per touched src file.
+- Coverage from `coverage-summary.json` with your patch, per touched src file (a missing summary is an infrastructure failure). There is no before-coverage in this version.
 
 - `*.probable-bug.test.ts(x)` files are split off **before** any check runs. The candidate tree is the PR head plus your other files; the checks run on exactly that tree, and `verify.json` records its tree id and each file's blob id. Probable-bug files run 3 times on their own, for evidence only, and are never published.
 
