@@ -152,8 +152,9 @@ describe('start', () => {
     expect(double.$disconnect).toHaveBeenCalledTimes(1);
   });
 
-  // Only the cleanup is pinned here. The error type is not asserted: today start() rejects with a TypeError that
-  // hides the EADDRINUSE error (known defect, reported in the PR description, not fixed here).
+  // Only the cleanup and the rejection are pinned here. The assertion accepts any Error, so it does not tell which
+  // one: today start() rejects with a TypeError that hides the EADDRINUSE error (known defect, reported in the PR
+  // description, not fixed here).
   it('disconnects the database and rejects when the server cannot start listening', async () => {
     const occupied = createServer();
     servers.push(occupied);
