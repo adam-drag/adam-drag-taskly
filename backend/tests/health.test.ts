@@ -20,6 +20,16 @@ it('reports ok after querying the database', async () => {
   expect(findFirst).toHaveBeenCalledWith({ select: { id: true } });
 });
 
+it('reports live without querying the database', async () => {
+  const findFirst = vi.spyOn(database.todo, 'findFirst').mockRejectedValue(new Error('Database unavailable'));
+  const app = express();
+  app.use('/api', createHealthRouter(database));
+  const response = await request(app).get('/api/health/live');
+  expect(response.status).toBe(200);
+  expect(response.body).toEqual({ status: 'live' });
+  expect(findFirst).not.toHaveBeenCalled();
+});
+
 it('answers 500 when the database query fails', async () => {
   const log = vi.spyOn(console, 'error').mockImplementation(() => {});
   const failure = new Error('Database unavailable');

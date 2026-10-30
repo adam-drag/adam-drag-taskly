@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { formatDate, isOverdue, selectTodos } from './todos'
+import { countByStatus, formatDate, isOverdue, selectTodos } from './todos'
 import type { Todo } from '../types'
 
 const base: Todo = {
@@ -12,6 +12,21 @@ const base: Todo = {
   created_at: '2026-10-01T12:00:00Z',
   updated_at: '2026-10-01T12:00:00Z',
 }
+
+describe('countByStatus', () => {
+  it('counts active and completed todos', () => {
+    const todos = [
+      base,
+      { ...base, id: 2, completed: true },
+      { ...base, id: 3, completed: true },
+    ]
+    expect(countByStatus(todos)).toEqual({ active: 1, completed: 2, total: 3 })
+  })
+
+  it('returns zeros for an empty list', () => {
+    expect(countByStatus([])).toEqual({ active: 0, completed: 0, total: 0 })
+  })
+})
 
 describe('selectTodos', () => {
   it('combines status with a case-insensitive search in the description', () => {
