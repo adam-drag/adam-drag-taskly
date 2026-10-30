@@ -136,8 +136,9 @@ const results = files.map((f) => {
   return { name: path.join(process.cwd(), f), status: failed ? 'failed' : 'passed', message: '', assertionResults: [{ fullName: 't', status: failed ? 'failed' : 'passed', failureMessages: failed ? ['expected 1 to be 2'] : [] }] };
 });
 const failedN = results.filter((r) => r.status === 'failed').length;
-// numFailed: a forged count on the full run, with no failed file behind it.
-const reportedFailed = !isRerun && cfg.numFailed != null ? cfg.numFailed : failedN;
+// numFailed / rerunNumFailed: a forged count on the full run or the reruns, with no failed file behind it.
+const forged = isRerun ? cfg.rerunNumFailed : cfg.numFailed;
+const reportedFailed = forged != null ? forged : failedN;
 fs.writeFileSync(out, JSON.stringify({ numTotalTests: results.length, numPassedTests: results.length - failedN, numFailedTests: reportedFailed, numTotalTestSuites: results.length, success: failedN === 0, testResults: results }));
 if (cov && cfg.coverage !== false) {
   const dir = cov.split('=')[1];
@@ -272,11 +273,19 @@ test('verify treats a killed rerun as infrastructure and closes the gate', () =>
   assert.equal(v.gate.publish, false);
 });
 
-test('verify treats a failing full-suite exit whose report names no failed file as infrastructure', () => {
-  const v = verifyFixture({ fullExit: 1, numFailed: 3 });
-  assert.ok(v.classes.infrastructure.some((m) => m.includes('backend: vitest exited 1 and its report names no failed test file')), v.classes.infrastructure.join('; '));
-  assert.equal(v.gate.publish, false);
-  assert.equal(v.trigger_attempt_2, false);
+test('verify treats a report that counts a failure but names no failed file as infrastructure', () => {
+  for (const fullExit of [1, 0]) {
+    const v = verifyFixture({ fullExit, numFailed: 3 });
+    assert.ok(v.classes.infrastructure.some((m) => m.includes(`backend: the full suite report counts a failure but names no failed test file (exit ${fullExit})`)), v.classes.infrastructure.join('; '));
+    assert.equal(v.gate.publish, false);
+    assert.equal(v.trigger_attempt_2, false);
+  }
+  const rerun = verifyFixture({ rerunExit: 1, rerunNumFailed: 2 });
+  assert.ok(rerun.classes.infrastructure.some((m) => m.includes('exited 1 with every candidate file passing')), rerun.classes.infrastructure.join('; '));
+  const rerun0 = verifyFixture({ rerunNumFailed: 2 });
+  assert.ok(rerun0.classes.infrastructure.some((m) => m.includes('backend: rerun 1 report counts a failure but names no failed test file (exit 0)')), rerun0.classes.infrastructure.join('; '));
+  assert.equal(rerun0.gate.publish, false);
+  assert.equal(rerun0.trigger_attempt_2, false);
 });
 
 test('verify treats a killed full suite as infrastructure even with a JSON report', () => {
