@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { formatDate, isOverdue, selectTodos } from './todos'
+import { countByPriority, formatDate, isOverdue, selectTodos } from './todos'
 import type { Todo } from '../types'
 
 const base: Todo = {
@@ -121,5 +121,21 @@ describe('formatDate', () => {
   it('formats an ISO date in the en-GB short form', () => {
     expect(formatDate('2026-10-15')).toBe('15 Oct 2026')
     expect(formatDate('2026-01-05')).toBe('5 Jan 2026')
+  })
+})
+
+describe('countByPriority', () => {
+  it('returns zero for every priority when there are no todos', () => {
+    expect(countByPriority([])).toEqual({ low: 0, medium: 0, high: 0 })
+  })
+
+  it('counts todos per priority', () => {
+    const todos: Todo[] = [
+      base,
+      { ...base, id: 2, priority: 'high' },
+      { ...base, id: 3, priority: 'high' },
+      { ...base, id: 4, priority: 'low' },
+    ]
+    expect(countByPriority(todos)).toEqual({ low: 1, medium: 1, high: 2 })
   })
 })
