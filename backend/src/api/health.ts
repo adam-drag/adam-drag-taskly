@@ -7,5 +7,9 @@ export function createHealthRouter(database: Database) {
     await database.todo.findFirst({ select: { id: true } });
     res.json({ status: 'ok' });
   });
+  // Readiness check: answers without touching the database.
+  router.get('/health/ready', (req, res) => {
+    res.json({ status: 'ready' });
+  });
   return router;
 }
