@@ -35,9 +35,9 @@ Every statement in this file names its source where one exists: a file in this r
 |---|---|---|---|---|
 | scope | no, reads files as data | none | contents: read | 5 min |
 | baseline | yes, as the unprivileged user `prtest` | none | contents: read | 25 min |
-| generate (attempt 1) | no, no install and no Bash | `ANTHROPIC_API_KEY` in the agent step only | contents: read | 12 min |
+| generate (attempt 1) | no, no install and no Bash | `ANTHROPIC_API_KEY` in the agent step and in the collect step (the secret scan compares against it) | contents: read | 12 min |
 | verify (attempt 1) | yes, as `prtest` | none | contents: read | 15 min |
-| generate-2 (attempt 2) | no | `ANTHROPIC_API_KEY` in the agent step only | contents: read | 12 min |
+| generate-2 (attempt 2) | no | `ANTHROPIC_API_KEY` in the agent step and in the collect step (the secret scan compares against it) | contents: read | 12 min |
 | verify-2 (attempt 2) | yes, as `prtest` | none | contents: read | 15 min |
 | publish | no, no PR checkout | none | contents: write, statuses: write | 5 min |
 | report | no | none | pull-requests: write, statuses: read | 5 min |
@@ -70,7 +70,7 @@ Only PR-induced failures go to the agent (`pr-induced.md`). Generation runs only
 
 **Bot commits carry no trailers.** The scope job finds them by author `github-actions[bot]` and a subject that starts with `test(agent):`. The repository owner's rule is that commits carry no attribution trailers.
 
-**Failure is never silent.** The report job runs with `if: always()`. The job summary always holds the verdict, also when the comment cannot be posted.
+**Failure is not silent.** The report job runs with `if: ${{ !cancelled() }}`, so it also runs after a failed job. The job summary holds the verdict, also when the comment cannot be posted. A run that the concurrency group cancels (an older event that a newer push replaced) writes no report. The newer run reports for the PR.
 
 ## 2. How to run
 
@@ -79,7 +79,7 @@ Prerequisites:
 - A GitHub repository with Actions enabled and a read-only default token. The workflow asks for write scopes per job.
 - The repository secret `ANTHROPIC_API_KEY`. A dedicated key that serves only this repository is recommended. Whether the Anthropic Console can set a spend limit on it was not verified.
 - Optional repository variable `TEST_AGENT_MODEL`. The default is `claude-sonnet-5-5`. A live run confirmed that this id works with the API key (section 4).
-- Node 22 on `ubuntu-24.04` (the workflow uses both). The workflow installs the pinned CLI itself.
+- Node 22 on `ubuntu-24.04` (the workflow uses both; the packages need Node 22.12 or later). The workflow installs the pinned CLI itself.
 - PRs from the same repository for the full run. A fork PR gets the baseline and a job summary only (section 9).
 
 **Run the workflow on GitHub.**
@@ -87,11 +87,11 @@ Prerequisites:
 1. Create a branch from `main` and change a file under `backend/src` or `frontend/src`. Do not add tests.
 2. Push the branch and open a PR to `main`, for example `gh pr create --base main --draft --title "my change" --body "test"`.
 3. Watch the run with `gh pr checks <pr>` or `gh run watch`. The jobs run in the order of section 1.
-4. Read the sticky comment on the PR. It starts with `## Test agent report` and a one-line verdict.
+4. Read the sticky comment on the PR. After a hidden marker line it has a `## Test agent report` heading and a one-line verdict.
 5. Read the commit status `test-agent/verified` on the bot commit, for example `gh api repos/<owner>/<repo>/commits/<bot-sha>/status`.
 6. For a run that published, `git pull` the branch to get the bot commit with the test files.
 
-**Run the checks on your machine.** No key is needed. The commands run from a clone of `main` with Node 22 or later.
+**Run the checks on your machine.** No key is needed. The commands run from a clone of `main` with Node 22.12 or later in the 22 line, or Node 24 or later. Both packages require at least 22.12, and the locked Prisma CLI (7.10.0) supports `^20.19 || ^22.12 || >=24.0`, so Node 23 does not work.
 
 ```bash
 # Backend: install, generate the Prisma client, type check, tests with coverage
@@ -306,8 +306,8 @@ The checks below ran against `main` HEAD `a20b82b82ee580c3f67186e0bdf939a3ff9ade
 | 4. A justified no-op | The docs-only and test-only PRs (deterministic, no LLM cost line), the agent no-op with its reason, and the superseded re-run. |
 | 5. Fork behaviour | Unit tests and the description above. No live fork run. |
 | 6. Failure and agent-failure reporting | The probable-bug PR (verified tests published, reproduction kept off the branch, status failure) and the generation-failure PR (stage and reason, red check). |
-| 7. Reproducible prerequisites and commands | A clean worktree of `main` followed section 2. The output is posted on the job board. |
-| 8. This file has real evidence | Every link was checked with `gh` or `curl`. Section 5 holds the coverage numbers measured on `main` HEAD. |
+| 7. Reproducible prerequisites and commands | A fresh worktree of `main` (`a20b82b`) followed the local commands of section 2 with Node 24.7.0: both type checks passed, the backend ran 93 tests (9 files, lines 97.24%, branches 95.83%), the frontend ran 98 tests (23 files, lines 93.37%, branches 89.05%), and `node --test` ran 80 tests with 0 failures. The GitHub steps of section 2 are the steps of the scenario runs in this section. |
+| 8. This file has real evidence | On 2026-10-30 every URL in this file (86) returned HTTP 200 with `curl`, every comment link resolved with `gh api`, and every relative link points to an existing file. Section 5 holds the coverage numbers measured on `main` HEAD. |
 | 9. Hygiene | `git log -p` on `main` has no attribution trailer line, no signature line, no robot emoji, no key pattern and none of the assignment text. One commit subject says that the coverage tests were generated with the test agent. It is a description and not a signature. The key patterns that match are the secret scanner's own regular expressions and one environment assignment that passes the secret by name. Demo PRs are closed and labelled. |
 | 10. Status accuracy and bot-commit runs | The table "Runs for bot commits" lists every bot commit with its status and its runs. |
 
@@ -400,7 +400,7 @@ The repository is public, so artifacts, logs, comments and PR content can be rea
 |---|---|---|
 | A PR plants agent configuration (`.claude/`, CLAUDE.md, MCP settings, skills) | scripts and the agent come from the base commit; the sanitize step removes `.claude`, `.github`, `.mcp.json`, CLAUDE.md, AGENTS.md and every symlink from `work/`; `--setting-sources project`, `--strict-mcp-config` and a trusted settings file | conformance check 3: the planted agent worked without sanitize and not with it |
 | Prompt injection in PR code, test names, comments or test output | the agent has no Bash and no web tools; its Edit rights cover test paths only; its prompt and the agent file mark all repository and context text as untrusted data; the guard and verify run outside the model | conformance checks 1 and 6; the injection demo ([PR 29](https://github.com/adam-drag/adam-drag-taskly/pull/29)) |
-| The agent leaks the API key | the key is set only in the environment of the agent step, and the CLI runs under `env -i`; reads outside the working directories are blocked; the raw transcript is not uploaded; a secret scan covers the patch, the result, the metadata, stderr and every candidate file, and it looks for the literal key and its base64, hex and URL-encoded forms; on a hit only a failure marker is uploaded | conformance check 4; no hit for the key prefix in the run logs of the first full-chain run and of PR 29 |
+| The agent leaks the API key | the key is set in the environment of two steps of the generate jobs, the agent step and the collect step (its secret scan needs the value), and neither step runs PR code; the CLI runs under `env -i`; reads outside the working directories are blocked; the raw transcript is not uploaded; a secret scan covers the patch, the result, the metadata, stderr and every candidate file, and it looks for the literal key and its base64, hex and URL-encoded forms; on a hit only a failure marker is uploaded | conformance check 4; no hit for the key prefix in the run logs of the first full-chain run and of PR 29 |
 | The agent writes outside the test paths or weakens tests | Edit allow and deny rules in the settings; `guard.mjs` fails closed on paths, deletes, renames, symlinks, mode changes, binaries, size caps, banned modifiers and assertion loss; publish runs the guard again on the exact files | conformance check 6; the guard unit tests; the guard refusals in the update scenario |
 | PR code run during verify steals a secret or writes | verify and baseline have no secret, a read-only token and `--ignore-scripts`; PR values reach scripts only through `env:`; PR code runs as `prtest` (see below) | workflow permissions; the isolation PRs in section 4 |
 | Publishing something other than what was verified | blob and tree SHA binding; the live head is compared with the tested SHA; the ref update is not forced | the stale-head drill (PR 6) and the tree comparison for every bot commit |
@@ -427,7 +427,7 @@ The repository is public, so artifacts, logs, comments and PR content can be rea
 - The no-weakening check is a heuristic. It counts `it.each` call sites and does not count their table rows, and it can miss a loosened matcher in some forms. The report lists every edited human test as "human test changed" with the before and after lines, so a reviewer can see it.
 - The agent process holds the API key in its environment. Conformance check 4 passed, so the Claude Code permission system blocks reads of the environment. If it had failed, the fallback would have been a local proxy that injects the key.
 - The commit status says that the run executed PR code, so a green status is not proof against the PR author.
-- `file:line` citations in probable-bug reports come from the agent. The report checks that the file exists and that the line is in range, and it says so. In an earlier trial, two of three citations were exact and one was two lines off.
+- `file:line` citations in probable-bug reports come from the agent. Nothing checks them, and the report says so ("are not checked"). A citation can name a file that does not exist or a line that is out of range. In an earlier trial, two of three citations were exact and one was two lines off.
 
 ## 7. gh-aw comparison
 
@@ -494,13 +494,14 @@ Further assumptions in the design:
 
 **Final workflow.**
 
-- Probable-bug files are not run on the merge base, and the report does not check the `file:line` citations of a probable bug beyond file existence and line range.
+- Probable-bug files are not run on the merge base, and nothing checks the `file:line` citations of a probable bug.
 - The baseline job runs after scope and not in parallel with it.
 - There is no live fork PR. The fork gate has unit tests.
 - If attempt 2 runs only for an open PR-induced failure and then fails, the verified attempt-1 tests are not published, because verify-2 is final.
 - The publish attempt is chosen in workflow expressions. It has no node test.
 - Attempt 2 has no live run on `main`, and verify-2 has no live run with the sandbox user. It runs the same `verify.sh` as verify-1.
 - A cancel between the ref update and the status write can leave the bot commit without a status.
+- A run that the concurrency group cancels writes no report and no job summary. The newer run for the same PR reports.
 - `indexResults` merges tests with the same full name in one file.
 - A vitest report with an unexpected value shape can stop the verify step with an error. That fails closed: no publish output is written.
 - The named-failure rule does not catch every hand-written report. A failed entry with an empty file name, or a malformed failed entry next to a named failed file, is not detected. Vitest does not write these shapes, and a PR can forge a clean report anyway (section 6).
