@@ -30,8 +30,9 @@ const readJson = (p) => JSON.parse(readFileSync(p, 'utf8'));
 
 
 const reportsFailure = (json) => json.numFailedTests > 0 || json.testResults.some((t) => !t || t.status !== 'passed');
-// A failed test file in the report: an entry that is an object and did not pass.
-const namesFailure = (json) => json.testResults.some((t) => t && typeof t === 'object' && t.status !== 'passed');
+// A failed test file in the report, as indexResults reads it (an entry with a file name that did not pass).
+// The root only shapes the keys, so any root works for this check.
+const namesFailure = (json) => Object.values(indexResults(json, '/').files).some((f) => f.status !== 'passed');
 
 // A coverage-threshold miss: vitest exits non-zero, every test passes, and its output names a threshold.
 export function runThresholdMiss(r) {
