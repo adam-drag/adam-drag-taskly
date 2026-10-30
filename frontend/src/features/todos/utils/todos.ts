@@ -69,3 +69,9 @@ export function formatDate(date: string): string {
     year: 'numeric',
   }).format(new Date(`${date}T12:00:00`))
 }
+
+export function countByPriority(todos: Todo[]): Record<Todo['priority'], number> {
+  const counts = { low: 0, medium: 0, high: 0 }
+  for (const todo of todos) counts[todo.priority] += 1
+  return counts
+}
