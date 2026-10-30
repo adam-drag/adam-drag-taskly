@@ -2,17 +2,17 @@
 
 This repository adds a PR workflow to the Taskly app. On every PR to `main` the workflow decides whether the change needs unit tests, lets the `test-writer` agent write or update them, runs them and reports. The same agent also wrote the coverage tests for the existing code.
 
-Evidence is in [SOLUTION_DETAILS.md](SOLUTION_DETAILS.md). Main pieces: the [workflow](.github/workflows/pr-test-agent.yml), the [agent](.claude/agents/test-writer.md), the [skills](.claude/skills), and the [scripts](.github/test-agent).
+Details: [SOLUTION_DETAILS.md](SOLUTION_DETAILS.md). Main pieces: the [workflow](.github/workflows/pr-test-agent.yml), the [agent](.claude/agents/test-writer.md), the [skills](.claude/skills), and the [scripts](.github/test-agent).
 
 ## Design
 
-**GitHub Actions with a pinned Claude Code CLI.** The version is 2.1.304, fixed in the lockfile. The `claude-code-action` (from version 1.0.74) restores agent configuration from the base branch tip. This solution restores it from the base SHA of the event. I tested gh-aw v1.0.1 in a time-boxed spike. There the agent's push call failed with "No such tool available", because the setup publishes through gh-aw's own MCP tools. Making it work needs MCP tools and Bash in the agent file, and the same file wrote the coverage tests, so that change would alter the agent. I did not adopt it. I tested no other gh-aw setup ([details](SOLUTION_DETAILS.md#7-gh-aw-comparison)).
+**GitHub Actions with a pinned Claude Code CLI.** The version is 2.1.304, fixed in the lockfile. The `claude-code-action` (from version 1.0.74) restores agent configuration from the base branch tip. This solution restores it from the base SHA of the event. I tested gh-aw v1.0.1 in a time-boxed spike. There the agent's push call failed with "No such tool available", because the setup publishes through gh-aw's own MCP tools. Making it work needs MCP tools and Bash in the agent file, and the same file wrote the coverage tests, so that change would alter the agent. I did not adopt it and tested no other gh-aw setup ([details](SOLUTION_DETAILS.md#7-gh-aw-comparison)).
 
 **Separate jobs.** Only the generate jobs hold the API key, and they run no PR code. Baseline and verify run PR code as an unprivileged user with no secret and a read-only token. Publish holds the write token and no PR code ([details](SOLUTION_DETAILS.md#1-design-decisions)).
 
 **Scripts from the base commit.** Every job runs scripts from the base SHA of the PR event, and the PR head is sanitized before the agent starts. Conformance check 3 showed that without the sanitize step a planted agent took effect, and with it none did.
 
-**Two attempts.** Attempt 2 runs when the guard passes, verify finds no infrastructure problem, and it finds a failing or untyped test file or an open PR-induced failure. It starts from the attempt-1 patch and reads the verify feedback. Only the final verified tree is published.
+**Two attempts.** Attempt 2 runs when the guard passes, verify finds no infrastructure problem, and it finds a failing or flaky test file, a failing type check or an open PR-induced failure. It starts from the attempt-1 patch and reads the verify feedback. Only the final verified tree is published.
 
 **The published tree is the verified tree.** Publish writes the tree that verify recorded, through the Git Data API. It refuses a different tree and updates the branch without force, so GitHub refuses a moved head.
 
@@ -67,7 +67,7 @@ Measured on `main` (`a20b82b`). The "before" values are from the first commit.
 | Backend | 33.02% | 97.24% | 33.33% | 95.83% | 48 to 93 |
 | Frontend | 47.68% | 93.37% | 43.79% | 89.05% | 18 to 98 |
 
-The agent wrote the coverage tests, except one frontend fixture. I reviewed every file. A few needed hand edits. Five application issues were reported and none is fixed here ([details](SOLUTION_DETAILS.md#5-coverage-work-and-findings)).
+The agent wrote the coverage tests, except one frontend fixture. I reviewed every file. A few needed hand edits. Five application issues were reported, none fixed here ([details](SOLUTION_DETAILS.md#5-coverage-work-and-findings)).
 
 ## Limitations
 

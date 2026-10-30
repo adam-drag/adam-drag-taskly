@@ -58,7 +58,7 @@ The top-level permissions are empty, every action is pinned by SHA, and the conc
 
 Only PR-induced failures go to the agent (`pr-induced.md`). Generation runs only after a conclusive baseline. The merge base comes from `git merge-base` of the base SHA and the head SHA. When git finds none, scope exits with an error and the run is red. There is no fallback to the base SHA.
 
-**Bounded repair loop with two attempts.** Generate-1 writes tests for the change and for the PR-induced failures. Verify-1 checks them. Generate-2 runs when the guard passed, no infrastructure problem was found, and verify-1 finds a failing or untyped test file, or an open PR-induced failure. It starts from the patch of attempt 1 and reads the failure feedback of verify-1. Verify-2 is final. When attempt 2 runs, only its verified tree can be published. Probable-bug files are split off before verification and never enter the published tree.
+**Bounded repair loop with two attempts.** Generate-1 writes tests for the change and for the PR-induced failures. Verify-1 checks them. Generate-2 runs when the guard passed, no infrastructure problem was found, and verify-1 finds a failing or flaky test file, a package whose type check fails, or an open PR-induced failure. It starts from the patch of attempt 1 and reads the failure feedback of verify-1. Verify-2 is final. When attempt 2 runs, only its verified tree can be published. Probable-bug files are split off before verification and never enter the published tree.
 
 **Verify blocks regressions.** A test that already failed on the head stays open and makes the verdict a failure. Publishing continues. A changed fixture with any failing test blocks. A killed full suite or rerun is an infrastructure failure. A vitest report that counts a failure but names no failed test file is not believed.
 
@@ -170,7 +170,7 @@ The split into four skills is a design choice of this solution.
 |---|---|---|
 | 1 | `--agent test-writer` applies the agent prompt and tools | the agent has no Bash tool and answered "NO-BASH" when asked for one |
 | 2 | Skills in the restored `.claude/skills` load, and calls show in the transcript | a Skill call for `verify-tests` is in the stream-json |
-| 3 | Nothing from untrusted configuration loads after sanitize and restore | without sanitizing the planted agent took effect, with it no planted text appeared |
+| 3 | A planted agent does not load after sanitize and restore | without sanitizing the planted agent took effect, with it no planted text appeared |
 | 4 | Reads outside the working directories are denied | an outside file, `~/.bashrc` and symlinks to an outside file and to `/proc/self/environ` were all denied, with and without symlink removal |
 | 5 | Cost, turns and structured output are available, and the caps work | the JSON has cost, turns, duration and usage, `structured_output` matches the schema, a $0.001 budget ended with `error_max_budget_usd` |
 | 6 | Edit allow rules restrict writes to test paths | a write to `backend/src/x.ts` was denied, a write to `backend/tests/x2.test.ts` was allowed |
