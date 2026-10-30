@@ -161,7 +161,7 @@ The split into four skills is a design choice of this solution.
 - Banned modifiers: `.only`, `.skip`, `.todo`, `.fails`, `skipIf` and similar.
 - No weakening: the number of test cases and of `expect(` calls in a file must not go down.
 - An edit to an existing test file that is not in `human_test_updates` may only remove blank lines, replace a single-line import with an import from the same module that keeps every name, and move a closing-bracket line that comes back unchanged in the same change block. Any other removed, changed or moved line needs a declaration.
-- If an edit removes or changes any line of an existing test file, no weak matcher may be added anywhere in that file. The rule is strict and applies to the whole file (a recorded decision of this work). A legitimate edit can be refused by it. Section 9 lists this as a limit.
+- If an edit removes or changes any line of an existing test file, no weak matcher may be added anywhere in that file. The rule is strict and applies to the whole file (the repository owner chose the strict rule). A legitimate edit can be refused by it. Section 9 lists this as a limit.
 - A declared human-test update may change an expected value. It may not drop a test case or an `expect(`. The report lists every edited human test as "human test changed" with the removed lines.
 
 **Conformance checks.** Six checks ran with the pinned CLI 2.1.304 and the model `claude-sonnet-5-5` (10 runs, $0.216). All six passed:
@@ -446,7 +446,7 @@ GitHub Agentic Workflows (gh-aw v1.0.1, Claude engine, the same API key) was eva
 | 7 | the same agent, skills and scripts run unchanged | fail: the agent's push call failed with "No such tool available" | run 6 [40959613051](https://github.com/adam-drag/adam-drag-taskly/actions/runs/40959613051) |
 | Budget rule | the migration must leave the agent files unchanged for the coverage work | fail | see below |
 
-The results are the ones that the spike author recorded. Three of them were checked again: PR 1 is closed and was not merged, the log of run 6 has the "No such tool available" error, and in run 7 the verify job failed and the push job was skipped.
+The spike recorded these results. Three of them were checked again: PR 1 is closed and was not merged, the log of run 6 has the "No such tool available" error, and in run 7 the verify job failed and the push job was skipped.
 
 **What worked.**
 
@@ -546,7 +546,7 @@ Further assumptions in the design:
 ## 10. Changes for a production version
 
 - Restrict egress from the runner, for example with `harden-runner`. The restriction must allow `binaries.prisma.sh` or cache the Prisma engine.
-- Use a dedicated, spend-limited API key and decide when to revoke it.
+- Use a dedicated API key, with a spend limit if the Console offers one (not verified), and decide when to revoke it.
 - Add a ruleset that protects `.github` and `.claude`. This needs a repository owner. It closes the same-repo workflow-edit limit of section 6.
 - Add a `workflow_dispatch` coverage mode to CI.
 - Run the tests in a sandboxed tool or an MCP `run_tests` server, so the agent can run its own tests inside the generate job.
