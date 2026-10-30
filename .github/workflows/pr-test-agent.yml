@@ -6,6 +6,10 @@
 # - generate and generate2 are the only jobs with ANTHROPIC_API_KEY. They run no PR code, the agent has no
 #   Bash, and the job token is read-only.
 # - baseline, verify and verify2 run PR code and tests, without secrets and with npm ci --ignore-scripts.
+#   PR code runs only as a separate OS user (prtest, no sudo, no groups) in copies under /srv/pr. The
+#   runner user keeps the trusted scripts, the checkouts, the results and GITHUB_OUTPUT/ENV/PATH and the
+#   step summary. isolate.sh sets this up and checks it in the log before any PR code runs, and kills every
+#   prtest process before a result is written. A failed check fails the job (closed).
 # - publish is the only writer. It checks the test-path allow-list, symlinks and blob ids outside the
 #   model and writes the verified tree through the Git Data API, or nothing.
 # - PR-controlled values reach scripts only through env.
@@ -64,7 +68,7 @@ jobs:
           SCOPE=trusted/.claude/skills/analyze-pr-changes/scripts/scope.mjs
           RC=0
           MISSING=""
-          for f in .claude/skills/analyze-pr-changes/scripts/scope.mjs .github/test-agent/baseline.mjs .github/test-agent/generate.sh .github/test-agent/verify.sh .github/test-agent/install.sh .github/test-agent/gen-status.mjs; do
+          for f in .claude/skills/analyze-pr-changes/scripts/scope.mjs .github/test-agent/baseline.mjs .github/test-agent/generate.sh .github/test-agent/verify.sh .github/test-agent/isolate.sh .claude/skills/verify-tests/scripts/sandbox.mjs .github/test-agent/gen-status.mjs; do
             [ -f "trusted/$f" ] || MISSING="$MISSING $f"
           done
           if [ -n "$MISSING" ]; then
@@ -115,19 +119,18 @@ jobs:
         with:
           node-version: '22'
           package-manager-cache: false
-      - name: Install and run the existing suites on the merge base and the PR head
+      - name: Install and run the existing suites on the merge base and the PR head (as the sandbox user)
         id: baseline
         run: |
+          # The boundary is set up and checked before any PR code runs (see isolate.sh). baseline.mjs loads
+          # next and runs npm ci, prisma generate and vitest only as the sandbox user, in copies under /srv/pr.
           MB=$(node -p 'require("./ctx/scope.json").merge_base')
-          mkdir -p mb out
-          git -C work archive "$MB" | tar -x -C mb
-          PKGS=$(node -p 'require("./ctx/scope.json").packages.filter((p) => p === "backend" || p === "frontend").join(" ")')
-          # shellcheck disable=SC2086
-          bash trusted/.github/test-agent/install.sh mb "merge base" install-failures.txt $PKGS
-          # shellcheck disable=SC2086
-          bash trusted/.github/test-agent/install.sh work head install-failures.txt $PKGS
-          node trusted/.github/test-agent/baseline.mjs --base mb --head work --scope ctx/scope.json --out out/baseline.json \
-            --work "$RUNNER_TEMP/baseline" --pr-induced-md out/pr-induced.md --install-failures install-failures.txt
+          mkdir -p out
+          bash trusted/.github/test-agent/isolate.sh setup trusted work ctx out
+          node trusted/.github/test-agent/baseline.mjs --git work --base-sha "$MB" --head-sha "$HEAD_SHA" --scope ctx/scope.json \
+            --out out/baseline.json --work "$RUNNER_TEMP/baseline" --pr-induced-md out/pr-induced.md --install \
+            --sandbox-user prtest --sandbox-root /srv/pr/baseline
+          bash trusted/.github/test-agent/isolate.sh reap
           node -e 'const b=require("./out/baseline.json"); console.log(`conclusive=${b.inconclusive.length === 0}`)' >> "$GITHUB_OUTPUT"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
@@ -234,7 +237,7 @@ jobs:
         with:
           node-version: '22'
           package-manager-cache: false
-      - name: Install dependencies and verify the candidate tree (attempt 1)
+      - name: Verify the candidate tree as the sandbox user (attempt 1)
         id: verify
         run: bash trusted/.github/test-agent/verify.sh 1
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -348,7 +351,7 @@ jobs:
         with:
           node-version: '22'
           package-manager-cache: false
-      - name: Install dependencies and verify the candidate tree (attempt 2)
+      - name: Verify the candidate tree as the sandbox user (attempt 2)
         id: verify
         run: bash trusted/.github/test-agent/verify.sh 2
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

@@ -3,12 +3,13 @@
 // Run with: node --test .github/test-agent/tests/*.test.mjs
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { main as scopeMain } from '../../../.claude/skills/analyze-pr-changes/scripts/scope.mjs';
 import { indexResults, verify } from '../../../.claude/skills/verify-tests/scripts/verify.mjs';
+import { IsolationError, createSandbox } from '../../../.claude/skills/verify-tests/scripts/sandbox.mjs';
 import { fetchBotStatus, render } from '../report.mjs';
 
 const git = (cwd, ...args) => {
@@ -142,6 +143,17 @@ if (cov && cfg.coverage !== false) {
   const pct = { pct: 100 };
   fs.writeFileSync(path.join(dir, 'coverage-summary.json'), JSON.stringify({ total: { lines: pct, statements: pct, branches: pct, functions: pct } }));
 }
+// Attacks by PR code, for the isolation tests.
+const FORGED = JSON.stringify({ forged: true, gate: { publish: true, reasons: [] }, trigger_attempt_2: false });
+if (!isRerun && cfg.attack === 'forge-out') fs.writeFileSync(cfg.out, FORGED);
+if (!isRerun && cfg.attack === 'modify-candidate') fs.writeFileSync('tests/x.test.ts', "it('a', () => { /* changed after the identity was recorded */ });\\n");
+if (!isRerun && cfg.attack === 'background') {
+  const out = JSON.stringify(cfg.out);
+  const code = "const fs = require('node:fs'); const end = Date.now() + 4000;"
+    + " const tick = () => { try { fs.writeFileSync(" + out + ", " + JSON.stringify(FORGED) + "); fs.writeFileSync(" + out + " + '.tampered', 'x'); } catch {}"
+    + " if (Date.now() < end) setTimeout(tick, 20); }; setTimeout(tick, 300);";
+  require('node:child_process').spawn(process.execPath, ['-e', code], { detached: true, stdio: 'ignore' }).unref();
+}
 if (isRerun && cfg.killRerun) process.kill(process.pid, 'SIGKILL');
 if (!isRerun && cfg.killFull) process.kill(process.pid, 'SIGKILL');
 process.exit(failedN ? 1 : isRerun ? (cfg.rerunExit ?? 0) : 0);
@@ -160,21 +172,50 @@ const newFile = (path, lines) => [
   `@@ -0,0 +1,${lines.length} @@`, ...lines.map((l) => `+${l}`), '',
 ].join('\n');
 
-function verifyFixture(fake, { existing = [], fixture = false, baseline = null } = {}) {
+// Fake npm and npx for the sandbox install: `npm ci` copies the fake vitest and tsc into node_modules/.bin.
+const FAKE_NPM = `#!/usr/bin/env node
+const fs = require('node:fs'), path = require('node:path');
+if (process.argv[2] !== 'ci') process.exit(0);
+const src = path.join(__dirname, 'fake-bins');
+fs.mkdirSync('node_modules/.bin', { recursive: true });
+for (const f of fs.readdirSync(src)) { fs.copyFileSync(path.join(src, f), path.join('node_modules/.bin', f)); fs.chmodSync(path.join('node_modules/.bin', f), 0o755); }
+`;
+
+// A bin directory with npm, npx and the fake tools. npmExtra is appended to the fake npm (PR code that runs
+// at install time).
+function fakeBin(root, npmExtra = '') {
+  const bin = join(root, 'bin');
+  mkdirSync(join(bin, 'fake-bins'), { recursive: true });
+  writeFileSync(join(bin, 'npm'), FAKE_NPM + npmExtra);
+  writeFileSync(join(bin, 'npx'), '#!/bin/sh\nexit 0\n');
+  writeFileSync(join(bin, 'fake-bins/vitest'), FAKE_VITEST);
+  writeFileSync(join(bin, 'fake-bins/tsc'), FAKE_TSC);
+  for (const f of ['npm', 'npx', 'fake-bins/vitest', 'fake-bins/tsc']) chmodSync(join(bin, f), 0o755);
+  return bin;
+}
+
+function withPath(bin, fn) {
+  const old = process.env.PATH;
+  process.env.PATH = `${bin}:${old}`;
+  const log = console.log;
+  console.log = () => {};
+  try { return fn(); } finally { process.env.PATH = old; console.log = log; }
+}
+
+// opts.npmExtra: PR code run by npm ci. opts.subprocess: run verify.mjs from a copy of the trusted scripts in
+// a child process (returns the copy's path as v.trusted). opts.sandbox: a sandbox to use instead.
+function verifyFixture(fake, { existing = [], fixture = false, baseline = null, npmExtra = '', subprocess = false, sandbox = null } = {}) {
   const root = mkdtempSync(join(tmpdir(), 'verify-'));
   const dir = join(root, 'work'), files = join(root, 'files'), work = join(root, 'scratch');
   mkdirSync(join(dir, 'backend/tests'), { recursive: true });
-  mkdirSync(join(dir, 'backend/node_modules/.bin'), { recursive: true });
   writeFileSync(join(dir, 'backend/package.json'), '{}\n');
+  // $OUT and $TRUSTED in the fake config: the paths an attack in PR code aims at.
+  writeFileSync(join(dir, 'backend/fake.json'), JSON.stringify(fake).split('$OUT').join(join(root, 'verify.json')).split('$TRUSTED').join(join(root, 'trusted')));
   git(dir, 'init', '-q');
   for (const f of existing) writeFileSync(join(dir, 'backend', f), "it('t', () => {});\n");
-  git(dir, 'add', 'backend/package.json', ...existing.map((f) => `backend/${f}`));
+  git(dir, 'add', 'backend/package.json', 'backend/fake.json', ...existing.map((f) => `backend/${f}`));
   commit(dir, 'Adam', 'base');
-  writeFileSync(join(dir, 'backend/fake.json'), JSON.stringify(fake));
-  writeFileSync(join(dir, 'backend/node_modules/.bin/vitest'), FAKE_VITEST);
-  writeFileSync(join(dir, 'backend/node_modules/.bin/tsc'), FAKE_TSC);
-  chmodSync(join(dir, 'backend/node_modules/.bin/vitest'), 0o755);
-  chmodSync(join(dir, 'backend/node_modules/.bin/tsc'), 0o755);
+  const bin = fakeBin(root, npmExtra);
   const good = 'backend/tests/x.test.ts', pb = 'backend/tests/x.probable-bug.test.ts';
   mkdirSync(join(files, 'backend/tests'), { recursive: true });
   writeFileSync(join(files, good), "it('a', () => {});\n");
@@ -188,13 +229,22 @@ function verifyFixture(fake, { existing = [], fixture = false, baseline = null }
   writeFileSync(join(root, 'scope.json'), JSON.stringify({ packages: ['backend'], files: [] }));
   writeFileSync(join(root, 'guard.json'), JSON.stringify({ ok: true, violations: [] }));
   writeFileSync(join(root, 'result.json'), JSON.stringify({ probable_bugs: [{ title: 'wrong comparison', test_file: pb }] }));
-  const args = { dir, files, work, patch: join(root, 'patch.diff'), scope: join(root, 'scope.json'), guard: join(root, 'guard.json'), result: join(root, 'result.json'), attempt: '1', out: join(root, 'verify.json'), feedback: join(root, 'feedback.md') };
+  const args = { dir, files, work, install: '1', patch: join(root, 'patch.diff'), scope: join(root, 'scope.json'), guard: join(root, 'guard.json'), result: join(root, 'result.json'), attempt: '1', out: join(root, 'verify.json'), feedback: join(root, 'feedback.md') };
   if (baseline) { writeFileSync(join(root, 'baseline.json'), JSON.stringify(baseline)); args.baseline = join(root, 'baseline.json'); }
-  const log = console.log;
-  console.log = () => {};
-  try { verify(args); } finally { console.log = log; }
+  const trusted = join(root, 'trusted');
+  if (subprocess) {
+    cpSync(join(import.meta.dirname, '../../../.claude/skills/verify-tests/scripts'), trusted, { recursive: true });
+    const argv = Object.entries(args).flatMap(([k, val]) => [`--${k}`, val]);
+    const r = spawnSync(process.execPath, [join(trusted, 'verify.mjs'), 'verify', ...argv], { encoding: 'utf8', env: { ...process.env, PATH: `${bin}:${process.env.PATH}` } });
+    if (r.status !== 0) throw new Error(`verify.mjs exited ${r.status}: ${r.stderr}`);
+  } else {
+    withPath(bin, () => verify(args, sandbox ? { sandbox } : {}));
+  }
   const v = JSON.parse(readFileSync(args.out, 'utf8'));
+  Object.defineProperty(v, 'trusted', { value: trusted });
+  Object.defineProperty(v, 'dir', { value: dir });
   Object.defineProperty(v, 'feedbackText', { value: readFileSync(args.feedback, 'utf8') });
+  Object.defineProperty(v, 'root', { value: root });
   return v;
 }
 
@@ -279,4 +329,60 @@ test('scope scans src directories named like build output, but not package build
   const scope = JSON.parse(readFileSync(join(out, 'scope.json'), 'utf8'));
   assert.deepEqual(scope.files.map((f) => f.path), ['frontend/src/features/coverage/meter.ts']);
   assert.equal(scope.decision, 'generate');
+});
+
+// --- isolation: attacks by PR code (plan: J2 security follow-up) -------------------------------------
+// In the workflow PR code runs as a separate OS user that cannot write the trusted scripts, out/ or the
+// GITHUB_* files at all (isolate.sh checks that in the log). These tests run as one user (direct sandbox
+// mode), so they show the verifier's own defences: it is loaded before PR code runs, it writes its result
+// last, it kills every PR process first, and it checks the tree against the recorded identity.
+
+const failing = { failing: ['tests/x.test.ts'] };
+
+test('isolation (a): PR code that overwrites the trusted verifier at install time does not change the result', () => {
+  const evil = `\nrequire('node:fs').writeFileSync(require(require('node:path').join(process.cwd(), 'fake.json')).trusted + '/verify.mjs', "import fs from 'node:fs'; fs.writeFileSync(process.argv[process.argv.indexOf('--out') + 1], JSON.stringify({ forged: true, gate: { publish: true } }));\\n");\n`;
+  const v = verifyFixture({ ...failing, trusted: '$TRUSTED' }, { npmExtra: evil, subprocess: true });
+  // The attack did write the copy (same user here); the verifier was already loaded and ignored it.
+  assert.match(readFileSync(join(v.trusted, 'verify.mjs'), 'utf8'), /forged: true/);
+  assert.equal(v.forged, undefined);
+  assert.equal(v.gate.publish, false);
+  assert.ok(v.classes.test_failure.length > 0, JSON.stringify(v.classes));
+  // PR code never ran in the runner's checkout: it is clean and has no node_modules.
+  assert.equal(git(v.dir, 'status', '--porcelain', '--ignored'), '');
+  assert.equal(existsSync(join(v.dir, 'backend/node_modules')), false);
+});
+
+test('isolation (b): a gate result forged by PR code during the run is replaced by the verifier', () => {
+  const v = verifyFixture({ ...failing, attack: 'forge-out', out: '$OUT' });
+  assert.equal(v.forged, undefined);
+  assert.equal(v.gate.publish, false);
+});
+
+test('isolation (c): a candidate changed after its identity was recorded closes the gate', () => {
+  const v = verifyFixture({ attack: 'modify-candidate' });
+  assert.equal(v.isolation.tree_check, 'changed: backend/tests/x.test.ts');
+  assert.ok(v.classes.infrastructure.some((m) => m.startsWith('candidate tree changed while PR code ran (1 file(s)): backend/tests/x.test.ts')), v.classes.infrastructure.join('; '));
+  assert.equal(v.gate.publish, false);
+  // Without the attack the same fixture publishes.
+  assert.equal(verifyFixture({}).gate.publish, true);
+});
+
+test('isolation (d): a background process left by a test is killed before the result is written', async () => {
+  const v = verifyFixture({ ...failing, attack: 'background', out: '$OUT' });
+  assert.equal(v.gate.publish, false);
+  // The tamper loop starts 300 ms after the test command and runs for 4 s; nothing may reach the file.
+  await new Promise((r) => setTimeout(r, 1500));
+  const after = JSON.parse(readFileSync(join(v.root, 'verify.json'), 'utf8'));
+  assert.equal(after.forged, undefined);
+  assert.equal(after.gate.publish, false);
+  assert.equal(existsSync(join(v.root, 'verify.json.tampered')), false);
+});
+
+test('isolation: a PR process that cannot be killed fails closed, and the result is still written', () => {
+  const root = mkdtempSync(join(tmpdir(), 'stuck-'));
+  const stuck = createSandbox({ root: join(root, 'sb'), listPids: () => [2 ** 30] });
+  assert.throws(() => stuck.reap(), IsolationError);
+  const v = verifyFixture({}, { sandbox: createSandbox({ root: join(root, 'sb2'), listPids: () => [2 ** 30] }) });
+  assert.equal(v.gate.publish, false);
+  assert.ok(v.classes.infrastructure.some((m) => m.startsWith('isolation failure: processes of the sandbox are still running')), v.classes.infrastructure.join('; '));
 });

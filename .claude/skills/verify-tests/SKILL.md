@@ -19,6 +19,7 @@ You cannot run anything. After you finish, the pipeline runs two scripts from th
 
 ## 2. Verification (`scripts/verify.mjs`), keyless, per package
 
+- Every check runs as a separate OS user without sudo, in a copy of the candidate tree. A test that changes a tracked file of that tree (a test file, a fixture, a src file) fails the whole run, so write temporary files only to a temp directory.
 - `tsc --noEmit` for the package (tests are included in both tsconfigs). Any type error in your file fails it.
 - The full suite with the JSON reporter, read per file.
 - Each changed test file runs **3 times**. Only 3/3 counts as passing; 1/3 or 2/3 is "flaky". So no dependence on the current date, test order, real timers, randomness or the network.
