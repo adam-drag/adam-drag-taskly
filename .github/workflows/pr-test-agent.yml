@@ -1,0 +1,514 @@
+# PR test agent: analyses a PR, writes or updates unit tests with the test-writer agent, verifies them by
+# running them, publishes only the verified tree and reports on the PR.
+#
+# Trust model:
+# - Every job runs scripts from the PR base commit (trusted/), never from the PR.
+# - generate and generate2 are the only jobs with ANTHROPIC_API_KEY. They run no PR code, the agent has no
+#   Bash, and the job token is read-only.
+# - baseline, verify and verify2 run PR code and tests, without secrets and with npm ci --ignore-scripts.
+#   PR code runs only as a separate OS user (prtest, no sudo, no groups) in copies under /srv/pr. The
+#   runner user keeps the trusted scripts, the checkouts, the results and GITHUB_OUTPUT/ENV/PATH and the
+#   step summary. isolate.sh sets this up and checks it in the log before any PR code runs, and kills every
+#   prtest process before a result is written. A failed check fails the job (closed).
+# - publish is the only writer. It checks the test-path allow-list, symlinks and blob ids outside the
+#   model and writes the verified tree through the Git Data API, or nothing.
+# - PR-controlled values reach scripts only through env.
+name: PR test agent
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    branches: [main]
+
+permissions: {}
+
+concurrency:
+  group: test-agent-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+env:
+  BASE_SHA: ${{ github.event.pull_request.base.sha }}
+  HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+  PR_NUMBER: ${{ github.event.pull_request.number }}
+  TZ: UTC
+
+jobs:
+  scope:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      decision: ${{ steps.scope.outputs.decision }}
+      skip_kind: ${{ steps.scope.outputs.skip_kind }}
+    steps:
+      - name: Check out the base commit (trusted)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          path: trusted
+          persist-credentials: false
+      - name: Check out the PR head (data only)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          path: work
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '22'
+          package-manager-cache: false
+      - name: Scope
+        id: scope
+        env:
+          IS_FORK: ${{ github.event.pull_request.head.repo.full_name != github.repository }}
+        run: |
+          mkdir -p ctx
+          SCOPE=trusted/.claude/skills/analyze-pr-changes/scripts/scope.mjs
+          RC=0
+          MISSING=""
+          for f in .claude/skills/analyze-pr-changes/scripts/scope.mjs .github/test-agent/baseline.mjs .github/test-agent/generate.sh .github/test-agent/verify.sh .github/test-agent/isolate.sh .claude/skills/verify-tests/scripts/sandbox.mjs .github/test-agent/gen-status.mjs; do
+            [ -f "trusted/$f" ] || MISSING="$MISSING $f"
+          done
+          if [ -n "$MISSING" ]; then
+            # The base commit has no test agent, or an older one than this workflow expects.
+            echo "{\"version\":1,\"decision\":\"skip\",\"skip_kind\":\"bootstrap\",\"reason\":\"bootstrap: trusted agent files missing on base:$MISSING\",\"packages\":[],\"files\":[]}" > ctx/scope.json
+          else
+            FORK=(); [ "$IS_FORK" = "true" ] && FORK=(--fork)
+            # scope.mjs computes the merge base and fails closed (decision error, exit 1) without one.
+            node "$SCOPE" --base mb --head work --out ctx --trusted trusted "${FORK[@]}" --git work --base-sha "$BASE_SHA" --head-sha "$HEAD_SHA" || RC=$?
+          fi
+          node -e 'const s=require("./ctx/scope.json"); console.log(`decision=${s.decision}`); console.log(`skip_kind=${s.skip_kind ?? ""}`)' >> "$GITHUB_OUTPUT"
+          exit "$RC"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: scope
+          path: ctx/
+          retention-days: 14
+
+  baseline:
+    needs: scope
+    if: needs.scope.outputs.decision == 'generate' || needs.scope.outputs.skip_kind == 'fork'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    permissions:
+      contents: read
+    outputs:
+      conclusive: ${{ steps.baseline.outputs.conclusive }}
+    steps:
+      - name: Check out the base commit (trusted)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          path: trusted
+          persist-credentials: false
+      - name: Check out the PR head
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          path: work
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: scope
+          path: ctx
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '22'
+          package-manager-cache: false
+      - name: Install and run the existing suites on the merge base and the PR head (as the sandbox user)
+        id: baseline
+        run: |
+          # The boundary is set up and checked before any PR code runs (see isolate.sh). baseline.mjs loads
+          # next and runs npm ci, prisma generate and vitest only as the sandbox user, in copies under /srv/pr.
+          MB=$(node -p 'require("./ctx/scope.json").merge_base')
+          mkdir -p out
+          bash trusted/.github/test-agent/isolate.sh setup trusted work ctx out
+          node trusted/.github/test-agent/baseline.mjs --git work --base-sha "$MB" --head-sha "$HEAD_SHA" --scope ctx/scope.json \
+            --out out/baseline.json --work "$RUNNER_TEMP/baseline" --pr-induced-md out/pr-induced.md --install \
+            --sandbox-user prtest --sandbox-root /srv/pr/baseline
+          bash trusted/.github/test-agent/isolate.sh reap
+          node -e '
+            const b = require("./out/baseline.json");
+            if (b.isolation?.mode !== "user") console.error(`::error::baseline ran in ${b.isolation?.mode} mode, not as the sandbox user`);
+            console.log(`conclusive=${b.inconclusive.length === 0 && b.isolation?.mode === "user"}`)' >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: baseline
+          path: out/
+          retention-days: 14
+
+  generate:
+    name: generate-1
+    needs: [scope, baseline]
+    if: needs.scope.outputs.decision == 'generate' && needs.baseline.outputs.conclusive == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    permissions:
+      contents: read
+    outputs:
+      status: ${{ steps.collect.outputs.status }}
+    steps:
+      - name: Check out the base commit (trusted)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          path: trusted
+          persist-credentials: false
+      - name: Check out the PR head (read by the agent, never run)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          path: work
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: scope
+          path: ctx
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: baseline
+          path: baseline
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '22'
+          package-manager-cache: false
+      - name: Install the pinned Claude Code CLI
+        run: bash trusted/.github/test-agent/generate.sh install
+      - name: Sanitize the PR checkout and restore the trusted agent and skills
+        run: bash trusted/.github/test-agent/generate.sh prepare 1
+      - name: Run the test-writer agent (attempt 1)
+        id: agent
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          MODEL: ${{ vars.TEST_AGENT_MODEL || 'claude-sonnet-5-5' }}
+          BUDGET_USD: '1.00'
+        run: bash trusted/.github/test-agent/generate.sh agent 1
+      - name: Extract run metadata, patch, guard and secret scan
+        id: collect
+        env:
+          SECRET_SCAN_VALUES: ${{ secrets.ANTHROPIC_API_KEY }}
+          AGENT_EXIT: ${{ steps.agent.outputs.exit }}
+        run: bash trusted/.github/test-agent/generate.sh collect 1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: gen-1
+          path: out/
+          retention-days: 14
+
+  verify:
+    name: verify-1
+    needs: [scope, baseline, generate]
+    if: needs.generate.outputs.status == 'patch'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    outputs:
+      publish: ${{ steps.verify.outputs.publish }}
+      attempt2: ${{ steps.verify.outputs.attempt2 }}
+    steps:
+      - name: Check out the base commit (trusted)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          path: trusted
+          persist-credentials: false
+      - name: Check out the PR head
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          path: work
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: scope
+          path: ctx
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: baseline
+          path: baseline
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: gen-1
+          path: gen
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '22'
+          package-manager-cache: false
+      - name: Verify the candidate tree as the sandbox user (attempt 1)
+        id: verify
+        run: bash trusted/.github/test-agent/verify.sh 1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: verify-1
+          path: out/
+          retention-days: 14
+
+  generate2:
+    name: generate-2
+    needs: [scope, baseline, generate, verify]
+    if: needs.verify.outputs.attempt2 == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    permissions:
+      contents: read
+    outputs:
+      status: ${{ steps.collect.outputs.status }}
+    steps:
+      - name: Check out the base commit (trusted)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          path: trusted
+          persist-credentials: false
+      - name: Check out the PR head (read by the agent, never run)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          path: work
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: scope
+          path: ctx
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: baseline
+          path: baseline
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: gen-1
+          path: prev
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: verify-1
+          path: fb
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '22'
+          package-manager-cache: false
+      - name: Install the pinned Claude Code CLI
+        run: bash trusted/.github/test-agent/generate.sh install
+      - name: Sanitize the PR checkout and restore the trusted agent and skills
+        run: bash trusted/.github/test-agent/generate.sh prepare 2
+      - name: Run the test-writer agent (attempt 2)
+        id: agent
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          MODEL: ${{ vars.TEST_AGENT_MODEL || 'claude-sonnet-5-5' }}
+          BUDGET_USD: '1.00'
+        run: bash trusted/.github/test-agent/generate.sh agent 2
+      - name: Extract run metadata, patch, guard and secret scan
+        id: collect
+        env:
+          SECRET_SCAN_VALUES: ${{ secrets.ANTHROPIC_API_KEY }}
+          AGENT_EXIT: ${{ steps.agent.outputs.exit }}
+        run: bash trusted/.github/test-agent/generate.sh collect 2
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: gen-2
+          path: out/
+          retention-days: 14
+
+  verify2:
+    name: verify-2
+    needs: [scope, baseline, generate, verify, generate2]
+    if: needs.generate2.outputs.status == 'patch'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    outputs:
+      publish: ${{ steps.verify.outputs.publish }}
+    steps:
+      - name: Check out the base commit (trusted)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          path: trusted
+          persist-credentials: false
+      - name: Check out the PR head
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          path: work
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: scope
+          path: ctx
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: baseline
+          path: baseline
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: gen-2
+          path: gen
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '22'
+          package-manager-cache: false
+      - name: Verify the candidate tree as the sandbox user (attempt 2)
+        id: verify
+        run: bash trusted/.github/test-agent/verify.sh 2
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: verify-2
+          path: out/
+          retention-days: 14
+
+  publish:
+    needs: [scope, baseline, generate, verify, generate2, verify2]
+    # The final attempt decides: verify-1 when no attempt 2 was asked for, else verify-2.
+    if: >-
+      !cancelled() && github.event.pull_request.head.repo.full_name == github.repository &&
+      ((needs.verify.outputs.publish == 'true' && needs.verify.outputs.attempt2 != 'true') ||
+      needs.verify2.outputs.publish == 'true')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: write
+      statuses: write
+    env:
+      FINAL: ${{ needs.verify.outputs.attempt2 == 'true' && '2' || '1' }}
+    steps:
+      - name: Check out the base commit (trusted)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          path: trusted
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: scope
+          path: ctx
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: baseline
+          path: baseline
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: gen-${{ needs.verify.outputs.attempt2 == 'true' && '2' || '1' }}
+          path: gen
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: verify-${{ needs.verify.outputs.attempt2 == 'true' && '2' || '1' }}
+          path: verify
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '22'
+          package-manager-cache: false
+      - name: Publish the verified tree
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          TESTED_SHA: ${{ github.event.pull_request.head.sha }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          mkdir -p out
+          # Candidate bytes come from the generate artifact (a job that never ran PR code), not from verify.
+          node trusted/.github/test-agent/publish.mjs --verify "verify/verify$FINAL.json" --candidate "gen/files$FINAL" \
+            --patch "gen/patch$FINAL.diff" --scope ctx/scope.json --baseline baseline/baseline.json --gen gen/gen.json --out out/publish.json
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: publish
+          path: out/
+          retention-days: 14
+
+  report:
+    needs: [scope, baseline, generate, verify, generate2, verify2, publish]
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      pull-requests: write
+      statuses: read
+    steps:
+      - name: Check out the base commit (trusted)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          path: trusted
+          persist-credentials: false
+      # One step per artifact, each to a fixed path, so the layout does not depend on how many artifacts
+      # the run produced. A missing artifact is fine here.
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        continue-on-error: true
+        with:
+          name: scope
+          path: arts/scope
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        continue-on-error: true
+        with:
+          name: baseline
+          path: arts/baseline
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        continue-on-error: true
+        with:
+          name: gen-1
+          path: arts/gen-1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        continue-on-error: true
+        with:
+          name: verify-1
+          path: arts/verify-1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        continue-on-error: true
+        with:
+          name: gen-2
+          path: arts/gen-2
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        continue-on-error: true
+        with:
+          name: verify-2
+          path: arts/verify-2
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        continue-on-error: true
+        with:
+          name: publish
+          path: arts/publish
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '22'
+          package-manager-cache: false
+      - name: Verdict, job summary and sticky comment
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          TESTED_SHA: ${{ github.event.pull_request.head.sha }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          SCOPE_JOB: ${{ needs.scope.result }}
+          BASELINE_JOB: ${{ needs.baseline.result }}
+          GEN_JOB: ${{ needs.generate.result }}
+          VERIFY_JOB: ${{ needs.verify.result }}
+          GEN2_JOB: ${{ needs.generate2.result }}
+          VERIFY2_JOB: ${{ needs.verify2.result }}
+          PUBLISH_JOB: ${{ needs.publish.result }}
+          SAME_REPO: ${{ github.event.pull_request.head.repo.full_name == github.repository }}
+        run: |
+          REPORT=trusted/.github/test-agent/report.mjs
+          if [ ! -f "$REPORT" ]; then
+            echo "Test agent: bootstrap. The base commit has no test agent yet, so this run only checks the scope (job result: $SCOPE_JOB)." >> "$GITHUB_STEP_SUMMARY"
+            [ "$SCOPE_JOB" = success ]
+            exit
+          fi
+          mkdir -p out
+          node "$REPORT" render --dir arts --out out/report.md --verdict-out out/verdict.json
+          cat out/report.md >> "$GITHUB_STEP_SUMMARY"
+          if [ "$SAME_REPO" = "true" ]; then
+            PUBLISHED=$(node -e 'try{const p=require("./arts/publish/publish.json"); if(p.status==="published") console.log(p.commit_sha)}catch{}')
+            node "$REPORT" post --body out/report.md --published-sha "$PUBLISHED" || {
+              POST_FAILED=1
+              printf '\n**failure: infrastructure (stage: report)**: the sticky comment was not posted. This summary is the report.\n' >> "$GITHUB_STEP_SUMMARY"
+            }
+          else
+            echo "Fork PR: no comment (read-only token). The job summary holds the report." >> "$GITHUB_STEP_SUMMARY"
+          fi
+          node -e 'const v=require("./out/verdict.json"); console.log(v.headline); process.exit(v.state==="success"?0:1)'
+          if [ "${POST_FAILED:-0}" = 1 ]; then echo "::error::sticky comment not posted; the job summary holds the report"; exit 1; fi
