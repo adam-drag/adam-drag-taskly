@@ -19,7 +19,7 @@ on:
   pull_request:
     types: [opened, synchronize, reopened]
     # agent-dev only: J1 scratch PRs for live checks. This commit never goes to main.
-    branches: [main, agent-dev]
+    branches: [main, agent-dev, j4-fault-base]
 
 permissions: {}
 
@@ -187,7 +187,7 @@ jobs:
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           MODEL: ${{ vars.TEST_AGENT_MODEL || 'claude-sonnet-5-5' }}
-          BUDGET_USD: '1.00'
+          BUDGET_USD: '0.01'
         run: bash trusted/.github/test-agent/generate.sh agent 1
       - name: Extract run metadata, patch, guard and secret scan
         id: collect
@@ -302,7 +302,7 @@ jobs:
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           MODEL: ${{ vars.TEST_AGENT_MODEL || 'claude-sonnet-5-5' }}
-          BUDGET_USD: '1.00'
+          BUDGET_USD: '0.01'
         run: bash trusted/.github/test-agent/generate.sh agent 2
       - name: Extract run metadata, patch, guard and secret scan
         id: collect
