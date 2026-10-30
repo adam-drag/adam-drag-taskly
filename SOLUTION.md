@@ -8,7 +8,7 @@ Evidence and implementation details are in [SOLUTION_DETAILS.md](SOLUTION_DETAIL
 
 **GitHub Actions with a pinned Claude Code CLI.** I tested gh-aw v1.0.1 in a time-boxed spike. In that setup the agent's push call failed with "No such tool available", because the setup publishes through gh-aw's own MCP tools. Making it work meant adding MCP tools and Bash to the agent file, which also wrote the coverage tests, so I did not adopt it. I did not test other gh-aw setups ([details](SOLUTION_DETAILS.md#7-gh-aw-comparison)).
 
-**Separate jobs.** Only the generate jobs hold the API key, and they run no PR code. The baseline and verify jobs run PR code as an unprivileged user, with no secret and a read-only token. Publish holds the write token and checks out no PR code ([details](SOLUTION_DETAILS.md#1-design-decisions)).
+**Separate jobs.** Only the generate jobs hold the API key, and they run no PR code. The baseline and verify jobs run PR code as an unprivileged user, with no secret and a read-only token. Publish holds the write token and no PR code ([details](SOLUTION_DETAILS.md#1-design-decisions)).
 
 **Scripts from the base commit.** Every job runs scripts from the base SHA of the PR event, and the PR head is sanitized before the agent starts.
 
@@ -22,7 +22,7 @@ Prerequisites: a GitHub repository with Actions enabled and a read-only default 
 
 ```bash
 gh secret set ANTHROPIC_API_KEY
-git switch -c my-change
+git switch -c my-change main
 # edit one file under backend/src or frontend/src and add no tests
 git add <the edited file>
 git commit -m "my change"
@@ -37,9 +37,9 @@ The local checks need no key. Their commands and the Node range are in [details]
 
 ## Agent and skills
 
-The agent is `.claude/agents/test-writer.md`. Its four skills in `.claude/skills/` are `analyze-pr-changes`, `backend-unit-tests`, `frontend-unit-tests` and `verify-tests`. The coverage tests came from the agent at `8a7393ddaa8e490fab67702cf751cc056536c7b2`. Since then the agent file is unchanged, and the guard, scope and verify scripts were hardened ([diff table](SOLUTION_DETAILS.md#3-the-agent-and-the-skills)).
+The agent is `.claude/agents/test-writer.md`. Its four skills in `.claude/skills/` are `analyze-pr-changes`, `backend-unit-tests`, `frontend-unit-tests` and `verify-tests`. The coverage tests came from the agent at `8a7393ddaa8e490fab67702cf751cc056536c7b2`. Since then the agent file is unchanged. Six files under `.claude` changed: the guard, scope and verify scripts, a new `sandbox.mjs` and two skill documents ([diff table](SOLUTION_DETAILS.md#3-the-agent-and-the-skills)).
 
-**Instructed.** The agent file tells the agent to call `analyze-pr-changes` first, the package skill before it writes tests, and `verify-tests` before it returns. It also tells the agent to write test files only and to keep every assertion. No script enforces the call order. The report warns when an attempt wrote tests without a stack skill call.
+**Instructed.** The agent file tells the agent to call `analyze-pr-changes` first, the package skill before it writes tests, and `verify-tests` before it returns. It also tells the agent to write test files only and keep every assertion. No script enforces the call order. The report warns when an attempt wrote tests without a stack skill call.
 
 **Enforced.** The agent has no Bash tool. The settings allow Edit on test paths only. `guard.mjs` refuses other paths, deletes, `.only` and `.skip`, and any drop in the number of test cases or `expect(` calls in a file. The generate job fails closed on a Skill call outside the four project skills.
 
@@ -69,13 +69,13 @@ The agent wrote the coverage tests, except one frontend fixture that a human wro
 
 ## Limitations
 
-Most important first ([all limits](SOLUTION_DETAILS.md#9-limitations)).
+The most important limits come first ([all limits](SOLUTION_DETAILS.md#9-limitations)).
 
-1. **A same-repo author can edit the workflow in the PR.** Under `pull_request` the workflow runs from the PR merge ref, so a malicious collaborator can change the workflow that checks the PR. The job split covers injected or generated code only. A ruleset on `.github` closes this, and only the repository owner can set it ([threat model](SOLUTION_DETAILS.md#6-threat-model)).
+1. **A same-repo author can edit the workflow in the PR.** Under `pull_request` the workflow runs from the PR merge ref, so a malicious collaborator can change the workflow. The job split covers injected or generated code only. A ruleset on `.github` closes this, and only the repository owner can set it ([threat model](SOLUTION_DETAILS.md#6-threat-model)).
 2. **The verifier does not prove honest test tooling.** Vitest and its config come from the PR, so a PR can forge a clean test report. A green status is no proof against the PR author.
 3. **Attempt 2 has no live run.** Two tries did not trigger it. Node tests cover the scripts. Nothing tests the choice of attempt in the workflow.
 4. **The guard refuses some legitimate edits.** It refuses an undeclared update of a test that the agent wrote earlier in the same PR, and an undeclared growth of a single-line import. Both stopped live runs with nothing published.
-5. **The weakening check is a heuristic.** It can miss a loosened matcher. The report lists every edited human test.
+5. **The weakening check is a heuristic.** It can miss a loosened matcher.
 6. **There is no live fork run.** I have no second account, so unit tests cover the fork gate.
 7. **Bot commits get no executed CI.** Commits pushed with `GITHUB_TOKEN` start no normal runs, so the `test-agent/verified` status holds the result.
 
@@ -87,6 +87,6 @@ Most important first ([all limits](SOLUTION_DETAILS.md#9-limitations)).
 ## Production priorities
 
 1. **Protect `.github` and `.claude` with a ruleset.** Only the owner can set it. It closes limitation 1.
-2. **Limit the key and the runner.** A dedicated key with a spend limit caps the cost. An egress restriction (for example `harden-runner`) limits which hosts the runner can reach.
+2. **Limit the key and the runner.** If the Console offers a spend limit, a dedicated key with one caps the cost. An egress restriction (for example `harden-runner`) limits which hosts the runner can reach.
 3. **Fix the two guard refusals and run attempt 2 live.** Both refusals blocked live runs.
 4. **Add an evaluation set of golden PRs.** It measures the agent's decisions over time ([details](SOLUTION_DETAILS.md#10-changes-for-a-production-version)).
