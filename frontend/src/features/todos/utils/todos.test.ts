@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { formatDate, isOverdue, selectTodos } from './todos'
+import { formatBudget, formatDate, isOverdue, selectTodos } from './todos'
 import type { Todo } from '../types'
 
 const base: Todo = {
@@ -114,6 +114,13 @@ describe('isOverdue', () => {
     expect(isOverdue({ ...base, due_date: '2026-10-20' })).toBe(false)
     at('2026-10-19T23:59:59')
     expect(isOverdue({ ...base, due_date: '2026-10-19' })).toBe(false)
+  })
+})
+
+describe('formatBudget', () => {
+  it('formats an amount as Swiss francs with two decimals', () => {
+    expect(formatBudget(1234.5)).toMatch(/^CHF\s1[’']234\.50$/)
+    expect(formatBudget(0)).toMatch(/^CHF\s0\.00$/)
   })
 })
 
