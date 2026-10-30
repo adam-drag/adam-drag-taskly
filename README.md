@@ -134,3 +134,5 @@ Coverage — `backend/coverage/index.html`:
 ```sh
 npm run test:coverage
 ```
+
+The backend and frontend suites need no database and no network access.
