@@ -98,10 +98,31 @@ test('verdict: a coverage threshold miss on head fails a fork or no-op run', () 
   const baseline = { ...B0, threshold_miss: ['backend'] };
   const fork = computeVerdict({ scope: { decision: 'skip', skip_kind: 'fork', reason: 'fork PR' }, baseline });
   assert.equal(fork.state, 'failure');
-  assert.match(fork.headline, /coverage threshold missed on head in backend/);
-  assert.equal(computeVerdict({ scope: scopeGen, baseline, gen: { status: 'no-op' } }).state, 'failure');
+  assert.equal(fork.class, 'threshold_miss');
+  assert.match(fork.headline, /^failure: coverage threshold: fork PR, generation skipped; coverage threshold missed on head in backend/);
+  const noop = computeVerdict({ scope: scopeGen, baseline, gen: { status: 'no-op' } });
+  assert.equal(noop.state, 'failure');
+  assert.equal(noop.class, 'threshold_miss');
+  assert.match(noop.headline, /^failure: coverage threshold: agent wrote no tests; coverage threshold missed on head in backend/);
   // With a verify step, verify's own threshold check on the candidate tree decides.
   assert.equal(computeVerdict({ scope: scopeGen, baseline, gen, verify: verifyOk, publish: published }).state, 'success');
+});
+
+test('verdict: without a verify step the classes follow ORDER (open failure, probable bug, threshold miss)', () => {
+  const fork = { decision: 'skip', skip_kind: 'fork', reason: 'fork PR' };
+  const both = { ...B0, threshold_miss: ['backend'], pre_existing: [{ id: 'a > t' }] };
+  for (const v of [computeVerdict({ scope: fork, baseline: both }), computeVerdict({ scope: scopeGen, baseline: both, gen: { status: 'no-op' } })]) {
+    assert.equal(v.class, 'open_failure');
+    assert.match(v.headline, /pre-existing failure on head: a > t/);
+    // The threshold miss stays a note under its own label.
+    assert.ok(v.notes.includes('coverage threshold: coverage threshold missed on head in backend'), v.notes.join('\n'));
+    assert.ok(v.notes.includes('test failure: pre-existing failure on head: a > t'), v.notes.join('\n'));
+  }
+  const bug = computeVerdict({ scope: scopeGen, baseline: { ...B0, threshold_miss: ['backend'] }, gen: { status: 'no-op', probable_bugs: ['off by one'] } });
+  assert.equal(bug.class, 'probable_bug');
+  assert.match(bug.headline, /off by one \(no test files written\)/);
+  assert.equal(computeVerdict({ scope: scopeGen, baseline: { ...B0, pr_induced: [{ id: 'a > t' }] }, gen: { status: 'no-op', probable_bugs: ['off by one'] } }).class, 'open_failure');
+  assert.equal(computeVerdict({ scope: scopeGen, baseline: B0, gen: { status: 'no-op', probable_bugs: ['off by one'] } }).class, 'probable_bug');
 });
 
 test('verdict: no merge base fails closed with the reason', () => {
