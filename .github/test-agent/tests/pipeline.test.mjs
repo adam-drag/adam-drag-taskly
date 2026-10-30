@@ -136,7 +136,9 @@ const results = files.map((f) => {
   return { name: path.join(process.cwd(), f), status: failed ? 'failed' : 'passed', message: '', assertionResults: [{ fullName: 't', status: failed ? 'failed' : 'passed', failureMessages: failed ? ['expected 1 to be 2'] : [] }] };
 });
 const failedN = results.filter((r) => r.status === 'failed').length;
-fs.writeFileSync(out, JSON.stringify({ numTotalTests: results.length, numPassedTests: results.length - failedN, numFailedTests: failedN, numTotalTestSuites: results.length, success: failedN === 0, testResults: results }));
+// numFailed: a forged count on the full run, with no failed file behind it.
+const reportedFailed = !isRerun && cfg.numFailed != null ? cfg.numFailed : failedN;
+fs.writeFileSync(out, JSON.stringify({ numTotalTests: results.length, numPassedTests: results.length - failedN, numFailedTests: reportedFailed, numTotalTestSuites: results.length, success: failedN === 0, testResults: results }));
 if (cov && cfg.coverage !== false) {
   const dir = cov.split('=')[1];
   fs.mkdirSync(dir, { recursive: true });
@@ -156,7 +158,7 @@ if (!isRerun && cfg.attack === 'background') {
 }
 if (isRerun && cfg.killRerun) process.kill(process.pid, 'SIGKILL');
 if (!isRerun && cfg.killFull) process.kill(process.pid, 'SIGKILL');
-process.exit(failedN ? 1 : isRerun ? (cfg.rerunExit ?? 0) : 0);
+process.exit(failedN ? 1 : isRerun ? (cfg.rerunExit ?? 0) : (cfg.fullExit ?? 0));
 `;
 
 // Fake tsc: prints the tscErrors lines from fake.json and exits 2 when there are any.
@@ -268,6 +270,13 @@ test('verify treats a killed rerun as infrastructure and closes the gate', () =>
   const v = verifyFixture({ killRerun: true });
   assert.ok(v.classes.infrastructure.some((m) => m.includes('was killed (SIGKILL)')), v.classes.infrastructure.join('; '));
   assert.equal(v.gate.publish, false);
+});
+
+test('verify treats a failing full-suite exit whose report names no failed file as infrastructure', () => {
+  const v = verifyFixture({ fullExit: 1, numFailed: 3 });
+  assert.ok(v.classes.infrastructure.some((m) => m.includes('backend: vitest exited 1 and its report names no failed test file')), v.classes.infrastructure.join('; '));
+  assert.equal(v.gate.publish, false);
+  assert.equal(v.trigger_attempt_2, false);
 });
 
 test('verify treats a killed full suite as infrastructure even with a JSON report', () => {

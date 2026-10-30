@@ -17,7 +17,8 @@
 // The baseline (existing suites on head and merge base) lives in .github/test-agent/baseline.mjs.
 // Pass/fail comes from the vitest JSON reporter, coverage from coverage-summary.json. A non-zero coverage run
 // with every test passing is a threshold miss only when vitest names a coverage threshold; otherwise it is
-// inconclusive (infrastructure). All runs use TZ=UTC. verify.json binds the result to the candidate tree:
+// inconclusive (infrastructure). A non-zero run whose report names no failed test file is infrastructure too.
+// All runs use TZ=UTC. verify.json binds the result to the candidate tree:
 // the tested head SHA, each candidate file's git blob id and the candidate tree id.
 import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
@@ -279,6 +280,10 @@ export function verify(args, opts = {}) {
       if (full.json && full.status !== 0 && allPassed) {
         if (THRESHOLD_MSG.test(stripAnsi(`${full.stdout}\n${full.stderr}`))) thresholdMiss = true;
         else infra.push(`${pkg}: vitest exited ${full.status} with every test passing and no coverage-threshold message`);
+      } else if (full.json && full.status !== 0 && !full.signal && failedFiles.length === 0) {
+        // A failing exit must come with a failed file in the report. The report is untrusted, so a count with no
+        // file behind it is not believed.
+        infra.push(`${pkg}: vitest exited ${full.status} and its report names no failed test file`);
       }
       const changed = candidate.map((c) => c.path).filter((p) => PKG_OF(p) === pkg && isRunnableTest(p));
       const reps = [];
