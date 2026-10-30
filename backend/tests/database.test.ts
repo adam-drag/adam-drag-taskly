@@ -11,8 +11,8 @@ it('initialize creates the todos table with its constraints', async () => {
   const sql = (execute.mock.calls[0]![0] as TemplateStringsArray).join('');
   expect(sql).toContain('CREATE TABLE IF NOT EXISTS todos');
   expect(sql).toContain('id SERIAL PRIMARY KEY');
-  expect(sql).toContain('todo_title_not_empty');
-  expect(sql).toContain('todo_priority');
+  expect(sql).toContain('CONSTRAINT todo_title_not_empty CHECK (length(title) >= 1)');
+  expect(sql).toContain("CONSTRAINT todo_priority CHECK (priority IN ('low', 'medium', 'high'))");
 });
 
 it('initialize propagates database errors', async () => {
