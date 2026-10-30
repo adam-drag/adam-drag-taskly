@@ -9,7 +9,7 @@ export function createHealthRouter(database: Database) {
   });
   // Liveness check: answers without touching the database.
   router.get('/health/live', (req, res) => {
-    res.json({ status: 'live' });
+    res.json({ status: 'alive' });
   });
   return router;
 }
