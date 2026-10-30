@@ -49,3 +49,13 @@ it('responds to the version route without touching the database', async () => {
   expect(response.body).toEqual({ version: 1 });
   expect(findFirst).not.toHaveBeenCalled();
 });
+
+it('responds to the time route without touching the database', async () => {
+  const findFirst = vi.spyOn(database.todo, 'findFirst');
+  const app = express();
+  app.use('/api', createHealthRouter(database));
+  const response = await request(app).get('/api/health/time');
+  expect(response.status).toBe(200);
+  expect(response.body).toEqual({ epoch: 0 });
+  expect(findFirst).not.toHaveBeenCalled();
+});
