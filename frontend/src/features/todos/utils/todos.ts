@@ -73,3 +73,13 @@ export function formatDate(date: string): string {
 export function formatBudget(amount: number): string {
   return new Intl.NumberFormat('de-CH', { style: 'currency', currency: 'CHF' }).format(amount)
 }
+
+/** Builds a URL slug from a todo title: lower case, diacritics removed, other characters become hyphens. Works for Polish titles too. */
+export function titleToSlug(title: string): string {
+  return title
+    .normalize('NFD')
+    .replace(/\p{Diacritic}/gu, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+}
