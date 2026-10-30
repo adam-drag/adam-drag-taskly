@@ -18,6 +18,7 @@ jobs:
       - name: Probe
         run: |
           set -x
+          set +e
           id; uname -a; cat /etc/os-release | head -3
           sudo -n true && echo "runner has passwordless sudo"
           grep -E '^(HOME_MODE|UMASK)' /etc/login.defs || true
@@ -27,7 +28,9 @@ jobs:
           find /opt/hostedtoolcache/node -maxdepth 3 -printf '%M %u:%g %p\n' | head -20
           sysctl fs.protected_symlinks fs.protected_hardlinks fs.protected_regular fs.protected_fifos || true
           command -v cron crontab at atd systemd-run || true
-          ls /etc/sudoers.d/ ; sudo cat /etc/sudoers.d/* | grep -v '^#' || true
+          sudo ls /etc/sudoers.d/; sudo sh -c 'cat /etc/sudoers.d/*' | grep -v '^#'
+          echo "$PATH" | tr ':' '\n' | while read -r d; do stat -c '%A %U:%G %n' "$d" 2>&1; done
+          for b in env sudo bash git tar pkill pgrep; do p=$(command -v $b); stat -c '%A %U:%G %n' "$p" "$(dirname "$p")"; done
           env | cut -d= -f1 | sort | tr '\n' ' '; echo
           sudo useradd --system --create-home --home-dir /srv/prhome --shell /usr/sbin/nologin prtest
           id prtest
