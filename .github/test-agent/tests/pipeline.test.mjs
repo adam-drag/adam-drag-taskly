@@ -319,9 +319,15 @@ test('indexResults skips null and non-object assertion entries in an untrusted r
   const { tests, files } = indexResults(json, '/r');
   assert.equal(files['backend/tests/a.test.ts'].tests, 1);
   assert.deepEqual(Object.keys(tests), ['backend/tests/a.test.ts > t']);
+  // failureMessages that is not an array is ignored, not a crash.
+  for (const failureMessages of ['boom', { x: 1 }, 7]) {
+    const r = indexResults({ testResults: [{ name: '/r/backend/tests/a.test.ts', status: 'failed', assertionResults: [{ fullName: 't', status: 'failed', failureMessages }] }] }, '/r');
+    assert.equal(r.tests['backend/tests/a.test.ts > t'].status, 'failed');
+    assert.equal(r.tests['backend/tests/a.test.ts > t'].failure, '');
+  }
 });
 
-test('verify: a probable-bug path that exists at head gets its head bytes back, so the tree check passes', () => {
+test('verify: a probable-bug path in the recorded tree gets its recorded bytes back, so the tree check passes', () => {
   const v = verifyFixture({}, { existing: ['tests/x.probable-bug.test.ts'] });
   assert.equal(v.isolation.tree_check, 'unchanged');
   assert.ok(!v.classes.infrastructure.some((m) => m.includes('tree changed')), v.classes.infrastructure.join('; '));

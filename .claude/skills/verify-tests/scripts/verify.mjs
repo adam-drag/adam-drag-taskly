@@ -113,7 +113,8 @@ export function indexResults(json, root) {
     // tests) gets one synthetic entry, so the per-test view never loses a failed file.
     if (tr.status !== 'passed' && !assertions.some((a) => a.status === 'failed')) tests[`${file} > (file failed to run)`] = { status: 'failed', failure: stripAnsi(tr.message || '').split(`${root}/`).join('') };
     for (const a of assertions) {
-      tests[`${file} > ${a.fullName}`] = { status: a.status, failure: stripAnsi((a.failureMessages ?? []).join('\n')).split(`${root}/`).join('') };
+      const messages = Array.isArray(a.failureMessages) ? a.failureMessages.map(String) : [];
+      tests[`${file} > ${a.fullName}`] = { status: a.status, failure: stripAnsi(messages.join('\n')).split(`${root}/`).join('') };
     }
   }
   return { tests, files };
@@ -325,8 +326,8 @@ export function verify(args, opts = {}) {
           if (st) { ran++; if (st !== 'passed') failed++; }
         }
         box.remove(dst);
-        // A probable-bug path that exists at head gets its head bytes back, so the tree check sees the
-        // recorded tree.
+        // A probable-bug path that is in the recorded tree gets its recorded bytes back, so the tree check
+        // sees the recorded tree.
         if (recorded[p.path]) box.writeFile(dst, readFileSync(join(staging, p.path)));
         entry.runs = ran; entry.failed_runs = failed;
       }

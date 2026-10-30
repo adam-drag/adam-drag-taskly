@@ -29,7 +29,7 @@ export const HEAD_RUNS = 3;
 const readJson = (p) => JSON.parse(readFileSync(p, 'utf8'));
 
 
-const reportsFailure = (json) => json.numFailedTests > 0 || json.testResults.some((t) => t.status !== 'passed');
+const reportsFailure = (json) => json.numFailedTests > 0 || json.testResults.some((t) => !t || t.status !== 'passed');
 
 // A coverage-threshold miss: vitest exits non-zero, every test passes, and its output names a threshold.
 export function runThresholdMiss(r) {

@@ -139,7 +139,7 @@ test('guard refuses an undeclared edit that drops an it.each row, and accepts an
   const dirs = existingFile(before, after);
   const patch = hunkPatch([['@@ -1,4 +1,3 @@', ' it.each([', '   [1, 2],', '-  [2, 4],', " ])('doubles %i', (a, b) => { expect(a * 2).toBe(b); });"]]);
   const r = checkPatch(patch, dirs.before, dirs.after);
-  assert.ok(r.violations.some((v) => v.includes('lines removed from an existing test file that is not in human_test_updates: [2, 4],')), r.violations.join('; '));
+  assert.ok(r.violations.some((v) => v.includes('lines removed or moved in an existing test file that is not in human_test_updates: [2, 4],')), r.violations.join('; '));
   // A row that is a bare identifier (or a scalar such as null) is a dropped case too.
   for (const row of ['caseB,', 'null,', 'false,']) {
     const idDirs = existingFile(`it.each([\n  caseA,\n  ${row}\n])('handles %s', (c) => { expect(f(c)).toBe(1); });\n`, "it.each([\n  caseA,\n])('handles %s', (c) => { expect(f(c)).toBe(1); });\n");
@@ -277,8 +277,16 @@ test('guard: a closing line moved inside a multi-line expectation needs a declar
   const patch = hunkPatch([['@@ -4,3 +4,3 @@', '       x: 1,', '-    },', '     b: 2,', '+    },']]);
   const undeclared = checkPatch(patch, before, after);
   assert.equal(undeclared.ok, false);
-  assert.ok(undeclared.violations.some((v) => v.includes('lines moved in an existing test file that is not in human_test_updates: ')), undeclared.violations.join('; '));
+  assert.ok(undeclared.violations.some((v) => v.includes('lines removed or moved in an existing test file that is not in human_test_updates: },')), undeclared.violations.join('; '));
   assert.equal(checkPatch(patch, before, after, { humanUpdates: [p] }).ok, true);
+  // The same move, followed by an appended test with the same lines: the closing line still has to come
+  // back in its own change block.
+  const appended = "it('b', () => {\n  expect(f()).toEqual({\n    a: {\n      x: 1,\n    },\n    b: 2,\n  });\n});\n";
+  const two = existingFile(beforeText, afterText + appended);
+  const twoPatch = hunkPatch([['@@ -4,5 +4,13 @@', '       x: 1,', '-    },', '     b: 2,', '+    },', '   });', ' });', ...appended.trimEnd().split('\n').map((l) => `+${l}`)]]);
+  const twoR = checkPatch(twoPatch, two.before, two.after);
+  assert.equal(twoR.ok, false);
+  assert.ok(twoR.violations.some((v) => v.includes('not in human_test_updates: },')), twoR.violations.join('; '));
 });
 
 // --- scope ---------------------------------------------------------------------------------------
