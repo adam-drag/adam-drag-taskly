@@ -43,12 +43,18 @@ test('baseline: a failed install makes the package inconclusive and classifies n
 test('baseline: a missing report or a killed run on either side is inconclusive', () => {
   assert.equal(runProblem({ status: 1, signal: null, json: null }), 'wrote no JSON report (exit 1)');
   assert.equal(runProblem({ status: null, signal: 'SIGTERM', json: { testResults: [] } }), 'killed (SIGTERM)');
-  const failing = { numFailedTests: 1, testResults: [{ status: 'failed' }] };
-  const passing = { numFailedTests: 0, testResults: [{ status: 'passed' }] };
+  const failing = { numFailedTests: 1, testResults: [{ name: '/r/backend/tests/a.test.ts', status: 'failed' }] };
+  const passing = { numFailedTests: 0, testResults: [{ name: '/r/backend/tests/a.test.ts', status: 'passed' }] };
   assert.equal(runProblem({ status: 1, signal: null, json: failing }), null);
+  // A failed entry without a file name is skipped by indexResults, so it names no failed file.
+  for (const unnamed of [{ status: 'failed' }, { name: 7, status: 'failed' }, { name: '/r/a.test.ts', status: 'failed', assertionResults: 'x' }]) {
+    assert.equal(runProblem({ status: 1, signal: null, json: { numFailedTests: 1, testResults: [unnamed] } }), 'JSON report counts a failure but names no failed test file (exit 1)', JSON.stringify(unnamed));
+  }
   assert.equal(runProblem({ status: 0, signal: null, json: passing }), null);
-  // A null entry in an untrusted report counts as a failure; it does not throw.
-  assert.equal(runProblem({ status: 1, signal: null, json: { numFailedTests: 0, testResults: [null] } }), null);
+  // A null entry in an untrusted report counts as a failure but names no file, so the run is a problem; it does not throw.
+  assert.equal(runProblem({ status: 1, signal: null, json: { numFailedTests: 0, testResults: [null] } }), 'JSON report counts a failure but names no failed test file (exit 1)');
+  // A failure count with no failed file behind it is not believed, whatever the exit code.
+  for (const status of [1, 0]) assert.equal(runProblem({ status, signal: null, json: { numFailedTests: 3, testResults: [{ status: 'passed' }] } }), `JSON report counts a failure but names no failed test file (exit ${status})`);
   assert.equal(runThresholdMiss({ status: 1, signal: null, json: { numFailedTests: 0, testResults: [null] }, stdout: 'ERROR: Coverage for lines (1%) does not meet global threshold (80%)' }), false);
   // A non-zero exit needs a reason: a failing test or a named coverage threshold.
   assert.equal(runProblem({ status: 1, signal: null, json: passing, stdout: '', stderr: 'Error: something else' }), 'exited 1 with every test passing and no coverage-threshold message');
