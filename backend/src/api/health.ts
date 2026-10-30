@@ -10,5 +10,8 @@ export function createHealthRouter(database: Database) {
   router.get('/health/ping', (req, res) => {
     res.json({ pong: true });
   });
+  router.get('/health/version', (req, res) => {
+    res.json({ version: 1 });
+  });
   return router;
 }
