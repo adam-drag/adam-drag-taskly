@@ -19,7 +19,7 @@ describe('TodoForm', () => {
     )
     await user.type(screen.getByLabelText(/Task title/), '   ')
     await user.click(screen.getByRole('button', { name: 'Save task' }))
-    expect(screen.getByText('Enter a task title.')).toBeVisible()
+    expect(screen.getByText('Enter a title for the task.')).toBeVisible()
     expect(onSubmit).not.toHaveBeenCalled()
   })
 
