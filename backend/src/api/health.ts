@@ -7,5 +7,8 @@ export function createHealthRouter(database: Database) {
     await database.todo.findFirst({ select: { id: true } });
     res.json({ status: 'ok' });
   });
+  router.get('/health/ping', (req, res) => {
+    res.json({ pong: true });
+  });
   return router;
 }
