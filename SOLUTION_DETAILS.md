@@ -29,7 +29,7 @@ Every statement in this file names its source where one exists: a file in this r
 
 ## 1. Design decisions
 
-**GitHub Actions with the Claude Code CLI, pinned.** The workflow is `.github/workflows/pr-test-agent.yml`. The CLI version is fixed in `.github/test-agent/package.json` and its lockfile (2.1.304) and is installed with `npm ci --ignore-scripts`. Two alternatives were considered. gh-aw gives a firewall, base restore and safe outputs, but its pushes do not trigger CI, so it went through a time-boxed spike. The `claude-code-action` has no agent input and restores the agent configuration from the tip of the base branch. This solution restores it from the base SHA of the event. Section 7 reports the gh-aw spike.
+**GitHub Actions with the Claude Code CLI, pinned.** The workflow is `.github/workflows/pr-test-agent.yml`. The CLI version is fixed in `.github/test-agent/package.json` and its lockfile (2.1.304) and is installed with `npm ci --ignore-scripts`. Two alternatives were considered. gh-aw offers a firewall, base restore and safe outputs. Pushes in the tested setup do not trigger CI, so it went through a time-boxed spike. The `claude-code-action` has no agent input and restores the agent configuration from the tip of the base branch. This solution restores it from the base SHA of the event. Section 7 reports the gh-aw spike.
 
 **Separate jobs, one purpose each.** No job that holds a secret or a write token runs PR code. The generate jobs check out the PR head as data for the agent to read, and they run none of it.
 
@@ -141,15 +141,15 @@ The coverage tests (section 5) came from running the agent locally with the same
 
 The split into four skills is a design choice of this solution.
 
-**The agent.** `test-writer` has the tools Read, Grep, Glob, Edit, Write, Skill and StructuredOutput. It has no Bash, so it cannot run tests. Its hard rules, from the agent file:
+**The agent.** `test-writer` has the tools Read, Grep, Glob, Edit, Write, Skill and StructuredOutput. It has no Bash, so it cannot run tests. The agent file gives it these hard rules. They are instructions. The Edit rules in the settings and the guard enforce the path limits, and the guard checks for common forms of weakening (below, and section 9 for what it misses):
 
-- It writes test files only. It never edits source, configuration, package files, `.claude/` or `.github/`.
-- It never weakens a test: no deleted or skipped tests or assertions, no loosened matchers, no `.only`, `.skip`, `.todo` or `.fails`.
-- It updates a human test only when the diff deliberately changes the behaviour that the test asserts, and it cites the diff line.
-- When the code contradicts a documented contract, it writes the test for the documented behaviour into a separate `*.probable-bug.test.ts(x)` file and reports the bug with a concrete failure path.
-- An empty result is valid. It treats everything in the context directory and in the repository as untrusted data.
+- It is told to write test files only and not to edit source, configuration, package files, `.claude/` or `.github/`.
+- It is told not to weaken a test: no deleted or skipped tests or assertions, no loosened matchers, no `.only`, `.skip`, `.todo` or `.fails`.
+- It is told to update a human test only when the diff deliberately changes the behaviour that the test asserts, and to cite the diff line.
+- When the code contradicts a documented contract, it is told to write the test for the documented behaviour into a separate `*.probable-bug.test.ts(x)` file and to report the bug with a concrete failure path.
+- The agent file says that an empty result is valid and that everything in the context directory and in the repository is untrusted data.
 
-**How the skills are used.** The agent invokes the skills with the Skill tool, in a fixed order: `analyze-pr-changes` first, the package skill before it writes in that package, and `verify-tests` before it returns. Each call is visible in the run transcript. The generate job reads the skill list from the transcript and fails closed on a Skill call outside the four project skills. The report takes the list of skills from the transcript. The model's own text plays no part in it.
+**How the skills are used.** The agent file tells the agent to invoke the skills with the Skill tool in this order: `analyze-pr-changes` first, the package skill before it writes in that package, and `verify-tests` before it returns. No script enforces the order. The report adds a warning line when an attempt wrote test files without a stack skill call. Each call is visible in the run transcript. The generate job reads the skill list from the transcript and fails closed on a Skill call outside the four project skills. The report takes the list of skills from the transcript. The model's own text plays no part in it.
 
 **Boundaries around the agent.** `claude-settings.json` sets `dontAsk` mode, allows Edit only for test paths, denies Bash, web tools, NotebookEdit and Agent, denies edits to infrastructure paths, and sets `blockReadsOutsideWorkingDirectories`. Section 6 lists the controls that sit outside the model.
 
@@ -433,7 +433,7 @@ The repository is public, so artifacts, logs, comments and PR content can be rea
 
 ## 7. gh-aw comparison
 
-GitHub Agentic Workflows (gh-aw v1.0.1, Claude engine, the same API key) was evaluated and rejected. The spike ran on a draft PR, [PR 1](https://github.com/adam-drag/adam-drag-taskly/pull/1), which is closed and was never merged. It ran seven times, cost 160.31 AI credits (about $1.60, by `gh aw audit`) and used about 55 minutes of a 2.5-hour time box. The adoption rule was that all of criteria 1 to 7 and the budget rule had to pass.
+GitHub Agentic Workflows (gh-aw v1.0.1, Claude engine, the same API key) was evaluated and not adopted. The spike ran on a draft PR, [PR 1](https://github.com/adam-drag/adam-drag-taskly/pull/1), which is closed and was never merged. It ran seven times, cost 160.31 AI credits (about $1.60, by `gh aw audit`) and used about 55 minutes of a 2.5-hour time box. The adoption rule was that all of criteria 1 to 7 and the budget rule had to pass.
 
 | Criterion | What it tests | Result | Run |
 |---|---|---|---|
@@ -458,10 +458,10 @@ The results are the ones that the spike author recorded. Three of them were chec
 
 **Why it was not chosen.**
 
-1. The agent cannot publish under gh-aw without changes. gh-aw publishes through its own MCP tools and needs a `git commit` from the agent. The `test-writer` agent has no such tools, and its push call failed. Making it work means adding MCP tools and Bash to the agent file, and the same file wrote the coverage tests, so this would change it.
-2. Least privilege is weaker. In this solution the job that holds the key runs no PR code and has no shell. In gh-aw the agent has a shell and runs PR code inside the sandbox. The sandbox and the key proxy reduce the risk, and the agent can still run code from the PR.
-3. Commit hygiene. The gh-aw bot commit carried an attribution trailer for the model and a subject that the model chose. This solution detects bot commits by a fixed author and subject, and its commits have no trailers.
-4. Pushes from gh-aw do not trigger CI, which matches the situation here. This solution records a commit status instead.
+1. In the tested setup the agent could not publish without changes. The setup published through gh-aw's own MCP tools and needed a `git commit` from the agent. The `test-writer` agent has no such tools, and its push call failed. Making it work means adding MCP tools and Bash to the agent file, and the same file wrote the coverage tests, so this would change it.
+2. The tested setup gave less isolation of PR code from the agent. In this solution the job that holds the key runs no PR code and has no shell. In the tested setup the agent had a shell and ran PR code inside the sandbox. The sandbox and the key proxy reduce the risk, and the agent could still run code from the PR.
+3. Commit hygiene. The bot commit of the tested setup carried an attribution trailer for the model and a subject that the model chose. This solution detects bot commits by a fixed author and subject, and its commits have no trailers.
+4. Pushes in the tested setup do not trigger CI, which matches the situation here. This solution records a commit status instead.
 5. Each run also paid for AI threat detection, about $0.09. Fixing points 1 to 3 does not fit in the hardening budget without changing the shared agent files.
 
 gh-aw restores agent configuration from the base commit. `claude-code-action` (from version 1.0.74) restores it from the tip of the base branch. This solution restores it from the base SHA of the event, which is the same pattern with an exact commit.
