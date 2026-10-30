@@ -13,5 +13,8 @@ export function createHealthRouter(database: Database) {
   router.get('/health/version', (req, res) => {
     res.json({ version: 1 });
   });
+  router.get('/health/time', (req, res) => {
+    res.json({ epoch: 0 });
+  });
   return router;
 }
