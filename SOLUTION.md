@@ -308,7 +308,7 @@ The checks below ran against `main` HEAD `a20b82b82ee580c3f67186e0bdf939a3ff9ade
 | 6. Failure and agent-failure reporting | The probable-bug PR (verified tests published, reproduction kept off the branch, status failure) and the generation-failure PR (stage and reason, red check). |
 | 7. Reproducible prerequisites and commands | A clean worktree of `main` followed section 2. The output is posted on the job board. |
 | 8. This file has real evidence | Every link was checked with `gh` or `curl`. Section 5 holds the coverage numbers measured on `main` HEAD. |
-| 9. Hygiene | `git log -p` on `main` has no `Co-Authored-By`, no robot emoji, no key pattern and none of the assignment text. The phrase "Generated with" appears once, in the subject "coverage tests generated with the test agent" and not as a signature. The key patterns that match are the secret scanner's own regular expressions and one environment assignment that passes the secret by name. Demo PRs are closed and labelled. |
+| 9. Hygiene | `git log -p` on `main` has no attribution trailer line, no signature line, no robot emoji, no key pattern and none of the assignment text. One commit subject says that the coverage tests were generated with the test agent. It is a description and not a signature. The key patterns that match are the secret scanner's own regular expressions and one environment assignment that passes the secret by name. Demo PRs are closed and labelled. |
 | 10. Status accuracy and bot-commit runs | The table "Runs for bot commits" lists every bot commit with its status and its runs. |
 
 ## 5. Coverage work and findings
