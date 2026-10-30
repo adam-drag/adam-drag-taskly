@@ -4,6 +4,8 @@
 //
 //   node scope.mjs --base <dir> --head <dir> --out <ctx dir>
 //                  [--trusted <dir>] [--fork] [--git <repo> --from <merge base sha> --to <head sha>]
+//   node scope.mjs --base <empty dir> --head <dir> --out <ctx dir> --git <repo> --base-sha <sha> --head-sha <sha> ...
+//        computes the merge base (exit 1 and decision "error" when there is none) and extracts it to --base
 // --base is the merge-base tree, --head the PR head tree (both read as data). With --git, the commits
 // from..to are read to find bot commits (author github-actions[bot] and subject "test(agent):").
 // Bot commits carry no trailers. Output: <out>/scope.json and <out>/pr.diff
@@ -14,7 +16,10 @@ import { dirname, join, posix, relative, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 export const LIMITS = { maxSrcFiles: 20, maxSrcLines: 800 };
-const SKIP_DIRS = new Set(['node_modules', '.git', 'coverage', 'dist', 'storybook-static', '.vite']);
+// node_modules and .git are skipped at any depth; build output only at the repo root or a package root
+// (backend/coverage, frontend/dist), so a src directory with one of these names is still scanned.
+const SKIP_DIRS = new Set(['node_modules', '.git']);
+const BUILD_DIRS = new Set(['coverage', 'dist', 'storybook-static', '.vite']);
 const SKIP_PREFIXES = ['backend/src/generated/'];
 const TRUSTED_REQUIRED = [
   '.claude/agents/test-writer.md',
@@ -24,6 +29,7 @@ const TRUSTED_REQUIRED = [
   '.claude/skills/verify-tests/SKILL.md',
   '.claude/skills/verify-tests/scripts/verify.mjs',
   '.claude/skills/verify-tests/scripts/guard.mjs',
+  '.claude/skills/verify-tests/scripts/sandbox.mjs',
 ];
 export const BOT_AUTHOR = 'github-actions[bot]';
 export const BOT_SUBJECT_PREFIX = 'test(agent):';
@@ -68,7 +74,7 @@ function walk(root) {
       const abs = join(dir, entry.name);
       const rel = relative(root, abs).split('\\').join('/');
       if (entry.isDirectory()) {
-        if (SKIP_DIRS.has(entry.name) || SKIP_PREFIXES.some((p) => `${rel}/`.startsWith(p))) continue;
+        if (SKIP_DIRS.has(entry.name) || (BUILD_DIRS.has(entry.name) && rel.split('/').length <= 2) || SKIP_PREFIXES.some((p) => `${rel}/`.startsWith(p))) continue;
         visit(abs);
       } else if (entry.isSymbolicLink()) {
         out.set(rel, { type: 'symlink', hash: `link:${readlinkSync(abs)}` });
@@ -162,22 +168,55 @@ export function decide({ files, fork, headCommit, trustedMissing }) {
   const src = files.filter((f) => f.kind === 'backend-src' || f.kind === 'frontend-src');
   const infra = files.filter((f) => f.kind === 'agent-infra');
   const srcLines = src.reduce((n, f) => n + f.added + f.removed, 0);
-  if (trustedMissing.length) return { decision: 'skip', reason: `bootstrap: trusted agent files missing on base (${trustedMissing.join(', ')})` };
-  if (infra.length) return { decision: 'skip', reason: `PR edits agent infrastructure (${infra.map((f) => f.path).join(', ')}); needs human review` };
+  if (trustedMissing.length) return { decision: 'skip', skip_kind: 'bootstrap', reason: `bootstrap: trusted agent files missing on base (${trustedMissing.join(', ')})` };
+  if (infra.length) return { decision: 'skip', skip_kind: 'infra-edit', reason: `PR edits agent infrastructure (${infra.map((f) => f.path).join(', ')}); needs human review` };
   if (isBotCommit(headCommit)) return { decision: 'skip', skip_kind: 'bot-commit', reason: `head commit ${String(headCommit.sha ?? '').slice(0, 12)} is a test-agent bot commit (author ${BOT_AUTHOR}, subject "${BOT_SUBJECT_PREFIX}")` };
-  if (fork) return { decision: 'skip', reason: 'fork PR: no secrets available, generation skipped' };
+  if (fork) return { decision: 'skip', skip_kind: 'fork', reason: 'fork PR: no secrets available, generation skipped' };
   if (!src.length) {
     const kinds = [...new Set(files.map((f) => f.kind))].sort();
     return { decision: 'no-op', reason: files.length ? `no backend/src or frontend/src change (changed kinds: ${kinds.join(', ')})` : 'no file changes' };
   }
   if (src.length > LIMITS.maxSrcFiles || srcLines > LIMITS.maxSrcLines) {
-    return { decision: 'skip', reason: `diff above cap: ${src.length} src files / ${srcLines} changed src lines (caps ${LIMITS.maxSrcFiles} / ${LIMITS.maxSrcLines})` };
+    return { decision: 'skip', skip_kind: 'size-cap', reason: `diff above cap: ${src.length} src files / ${srcLines} changed src lines (caps ${LIMITS.maxSrcFiles} / ${LIMITS.maxSrcLines})` };
   }
   return { decision: 'generate', reason: `${src.length} src file(s) changed (${srcLines} lines) in ${[...new Set(src.map((f) => f.kind.split('-')[0]))].sort().join(' + ')}` };
 }
 
+// Merge base of the PR base SHA and the head SHA. Fails closed: no merge base means no scope.
+export function mergeBase(repo, baseSha, headSha) {
+  const r = spawnSync('git', ['-C', repo, 'merge-base', baseSha, headSha], { encoding: 'utf8' });
+  if (r.status !== 0 || !/^[0-9a-f]{40}$/.test(r.stdout.trim())) {
+    return { ok: false, reason: `git merge-base ${baseSha.slice(0, 12)} ${headSha.slice(0, 12)} exited ${r.status}${r.stderr.trim() ? `: ${r.stderr.trim().slice(0, 200)}` : ''}` };
+  }
+  return { ok: true, sha: r.stdout.trim() };
+}
+
+// Extract <sha> of <repo> into <dir> (git archive, data only: no checkout, no hooks, no attributes run).
+function extractTree(repo, sha, dir) {
+  mkdirSync(dir, { recursive: true });
+  const a = spawnSync('git', ['-C', repo, 'archive', '--format=tar', sha], { maxBuffer: 1024 * 1024 * 1024 });
+  if (a.status !== 0) throw new Error(`git archive ${sha} failed: ${a.stderr}`);
+  const t = spawnSync('tar', ['-x', '-C', dir], { input: a.stdout });
+  if (t.status !== 0) throw new Error(`tar -x failed: ${t.stderr}`);
+}
+
 export function main(argv) {
   const args = parseArgs(argv);
+  // --base-sha/--head-sha with --git: compute the merge base, extract it to --base and scan from there.
+  if (args['base-sha'] && args['head-sha'] && args.git && args.out) {
+    mkdirSync(resolve(args.out), { recursive: true });
+    const mb = mergeBase(resolve(args.git), args['base-sha'], args['head-sha']);
+    if (!mb.ok) {
+      const scope = { version: 1, decision: 'error', reason: `no merge base: ${mb.reason}`, packages: [], files: [] };
+      writeFileSync(join(resolve(args.out), 'scope.json'), `${JSON.stringify(scope, null, 2)}\n`);
+      console.log(JSON.stringify({ decision: scope.decision, reason: scope.reason }));
+      return 1;
+    }
+    extractTree(resolve(args.git), mb.sha, resolve(args.base));
+    writeFileSync(join(resolve(args.out), 'shas.json'), `${JSON.stringify({ merge_base: mb.sha, base_sha: args['base-sha'], head_sha: args['head-sha'] })}\n`);
+    args.from = mb.sha;
+    args.to = args['head-sha'];
+  }
   if (!args.base || !args.head || !args.out) {
     console.error('usage: scope.mjs --base <dir> --head <dir> --out <dir> [--trusted <dir>] [--fork] [--git <repo> --from <sha> --to <sha>]');
     return 2;
@@ -221,6 +260,7 @@ export function main(argv) {
   const scope = {
     version: 1,
     decision,
+    merge_base: args.from ?? null,
     ...(skipKind ? { skip_kind: skipKind } : {}),
     reason,
     llm_call_needed: decision === 'generate',

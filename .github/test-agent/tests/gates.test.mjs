@@ -70,6 +70,30 @@ test('guard sees a banned modifier on a content line that starts with +++', () =
   assert.equal(r.totals.added, 1);
 });
 
+// Guard-bypass fixtures: each is a way a patch could reach code outside the test allow-list, hide a
+// failing test, or delete a human test.
+test('guard refuses bypass attempts: delete, rename, traversal, modes, symlink, binary, skip modifiers', () => {
+  const raw = (...lines) => [...lines, ''].join('\n');
+  const cases = [
+    ['delete', raw('diff --git a/backend/tests/todos.test.ts b/backend/tests/todos.test.ts', 'deleted file mode 100644', 'index 1111111..0000000', '--- a/backend/tests/todos.test.ts', '+++ /dev/null', '@@ -1 +0,0 @@', "-it('a', () => { expect(1).toBe(1); });"), 'delete not allowed'],
+    ['rename', raw('diff --git a/backend/src/a.ts b/backend/tests/a.test.ts', 'similarity index 100%', 'rename from backend/src/a.ts', 'rename to backend/tests/a.test.ts'), 'rename'],
+    ['traversal', newFile('backend/tests/../src/x.test.ts', ['x']), 'path traversal'],
+    ['executable', raw('diff --git a/backend/tests/x.test.ts b/backend/tests/x.test.ts', 'new file mode 100755', '--- /dev/null', '+++ b/backend/tests/x.test.ts', '@@ -0,0 +1 @@', '+x'), 'mode 100755'],
+    ['symlink', raw('diff --git a/backend/tests/x.test.ts b/backend/tests/x.test.ts', 'new file mode 120000', '--- /dev/null', '+++ b/backend/tests/x.test.ts', '@@ -0,0 +1 @@', '+../../.env'), 'symlink'],
+    ['binary', raw('diff --git a/backend/tests/x.test.ts b/backend/tests/x.test.ts', 'new file mode 100644', 'index 0000000..1111111', 'GIT binary patch', 'literal 3', 'KcmZ?wa{d3V0RR91'), 'binary'],
+    ['describe.only', newFile('frontend/src/a.test.tsx', ["describe.only('x', () => {});"]), 'banned modifier'],
+    ['it.todo', newFile('frontend/src/a.test.tsx', ["it.todo('y');"]), 'banned modifier'],
+    ['skipIf', newFile('backend/tests/a.test.ts', ["test.skipIf(true)('z', () => {});"]), 'banned modifier'],
+    ['agent dir', newFile('backend/tests/.claude/skills/x/SKILL.md', ['x']), '.claude/**'],
+    ['lockfile', newFile('backend/tests/package-lock.json', ['{}']), 'package'],
+  ];
+  for (const [name, patch, expected] of cases) {
+    const r = checkPatch(patch);
+    assert.equal(r.ok, false, name);
+    assert.ok(r.violations.some((v) => v.includes(expected)), `${name}: ${r.violations.join('; ')}`);
+  }
+});
+
 function existingFile(beforeText, afterText) {
   const root = mkdtempSync(join(tmpdir(), 'guard-'));
   const before = join(root, 'before'), after = join(root, 'after');
@@ -90,6 +114,46 @@ test('guard refuses a weakened assertion in an existing test file, declared or n
   const declared = checkPatch(patch, before, after, { humanUpdates: [p] });
   assert.ok(!declared.violations.some((v) => v.includes('not in human_test_updates')));
   assert.ok(declared.violations.some((v) => v.includes('weak matcher')));
+});
+
+test('guard refuses a declared human-test update that drops a test case or an expect', () => {
+  const p = 'backend/tests/x.test.ts';
+  const two = "it('a', () => { expect(f()).toBe(3); });\nit('b', () => { expect(g()).toBe(4); });\n";
+  const one = "it('a', () => { expect(f()).toBe(5); });\n";
+  const { before, after } = existingFile(two, one);
+  const patch = modified(p, two.trim().split('\n'), [one.trim()]);
+  const r = checkPatch(patch, before, after, { humanUpdates: [p] });
+  assert.ok(r.violations.some((v) => v.includes('test cases went down 2 -> 1')), r.violations.join('; '));
+  assert.ok(r.violations.some((v) => v.includes('expect( calls went down 2 -> 1')), r.violations.join('; '));
+  // The same file with only the expected value changed and declared is a valid human-test update.
+  const upd = existingFile("it('a', () => { expect(f()).toBe(3); });\n", "it('a', () => { expect(f()).toBe(5); });\n");
+  const ok = checkPatch(modified(p, ["it('a', () => { expect(f()).toBe(3); });"], ["it('a', () => { expect(f()).toBe(5); });"]), upd.before, upd.after, { humanUpdates: [p] });
+  assert.equal(ok.ok, true, ok.violations.join('; '));
+  assert.deepEqual(ok.edited_existing[0].removed_lines, ["it('a', () => { expect(f()).toBe(3); });"]);
+});
+
+test('guard refuses an undeclared edit that drops an it.each row, and accepts an import edit', () => {
+  const p = 'backend/tests/x.test.ts';
+  const before = "it.each([\n  [1, 2],\n  [2, 4],\n])('doubles %i', (a, b) => { expect(a * 2).toBe(b); });\n";
+  const after = "it.each([\n  [1, 2],\n])('doubles %i', (a, b) => { expect(a * 2).toBe(b); });\n";
+  const dirs = existingFile(before, after);
+  const patch = hunkPatch([['@@ -1,4 +1,3 @@', ' it.each([', '   [1, 2],', '-  [2, 4],', " ])('doubles %i', (a, b) => { expect(a * 2).toBe(b); });"]]);
+  const r = checkPatch(patch, dirs.before, dirs.after);
+  assert.ok(r.violations.some((v) => v.includes('lines removed or moved in an existing test file that is not in human_test_updates: [2, 4],')), r.violations.join('; '));
+  // A row that is a bare identifier (or a scalar such as null) is a dropped case too.
+  for (const row of ['caseB,', 'null,', 'false,']) {
+    const idDirs = existingFile(`it.each([\n  caseA,\n  ${row}\n])('handles %s', (c) => { expect(f(c)).toBe(1); });\n`, "it.each([\n  caseA,\n])('handles %s', (c) => { expect(f(c)).toBe(1); });\n");
+    const idPatch = hunkPatch([['@@ -1,4 +1,3 @@', ' it.each([', '   caseA,', `-  ${row}`, " ])('handles %s', (c) => { expect(f(c)).toBe(1); });"]]);
+    const idR = checkPatch(idPatch, idDirs.before, idDirs.after);
+    assert.ok(idR.violations.some((v) => v.includes(`not in human_test_updates: ${row}`)), `${row}: ${idR.violations.join('; ')}`);
+  }
+  // A property named import inside an expected object is not an import line.
+  const prop = existingFile("it('a', () => { expect(f()).toEqual({\n  import: 'x',\n  b: 1,\n}); });\n", "it('a', () => { expect(f()).toEqual({\n  b: 1,\n}); });\n");
+  const propR = checkPatch(hunkPatch([['@@ -1,4 +1,3 @@', " it('a', () => { expect(f()).toEqual({", "-  import: 'x',", '   b: 1,', ' }); });']]), prop.before, prop.after);
+  assert.ok(propR.violations.some((v) => v.includes("not in human_test_updates: import: 'x',")), propR.violations.join('; '));
+  const imp =existingFile("import { expect, it } from 'vitest';\nit('a', () => { expect(1).toBe(1); });\n", "import { expect, it, vi } from 'vitest';\nit('a', () => { expect(1).toBe(1); });\nit('b', () => { expect(vi.fn()).not.toHaveBeenCalled(); });\n");
+  const ok = checkPatch(hunkPatch([['@@ -1,2 +1,3 @@', "-import { expect, it } from 'vitest';", "+import { expect, it, vi } from 'vitest';", " it('a', () => { expect(1).toBe(1); });", "+it('b', () => { expect(vi.fn()).not.toHaveBeenCalled(); });"]]), imp.before, imp.after);
+  assert.equal(ok.ok, true, ok.violations.join('; '));
 });
 
 test('guard accepts new tests appended to an existing file, weak matchers included', () => {
@@ -158,6 +222,73 @@ test('guard refuses an import edit plus an appended weak-matcher test (accepted 
   assert.equal(checkPatch(patch, before, after).ok, false);
 });
 
+test('guard: an undeclared changed value inside a multi-line expectation needs a declaration (fnd_dc1a984a1018765a)', () => {
+  const p = 'backend/tests/x.test.ts';
+  const cases = [
+    ['age: 3,', 'age: 4,'],
+    ["name: 'Ada',", "name: 'Bob',"],
+    ['3,', '4,'],
+    ['})', '}, 2)'],
+  ];
+  for (const [from, to] of cases) {
+    const beforeText = `it('a', () => {\n  expect(f()).toEqual({\n    ${from}\n  });\n});\n`;
+    const afterText = beforeText.replace(from, to);
+    const { before, after } = existingFile(beforeText, afterText);
+    const patch = hunkPatch([['@@ -2,3 +2,3 @@', '   expect(f()).toEqual({', `-    ${from}`, `+    ${to}`, '   });']]);
+    const undeclared = checkPatch(patch, before, after);
+    assert.equal(undeclared.ok, false, from);
+    assert.ok(undeclared.violations.some((v) => v.includes(`not in human_test_updates: ${from}`)), `${from}: ${undeclared.violations.join('; ')}`);
+    const declared = checkPatch(patch, before, after, { humanUpdates: [p] });
+    assert.equal(declared.ok, true, `${from}: ${declared.violations.join('; ')}`);
+  }
+  // A changed closing line counts as a change too.
+  const close = existingFile("it('a', () => {\n  expect(f()).toEqual([\n    1,\n  ]);\n});\n", "it('a', () => {\n  expect(f()).toEqual([\n    1,\n  ], 2);\n});\n");
+  const closeR = checkPatch(hunkPatch([['@@ -3,2 +3,2 @@', '     1,', '-  ]);', '+  ], 2);']]), close.before, close.after);
+  assert.ok(closeR.violations.some((v) => v.includes('not in human_test_updates: ]);')), closeR.violations.join('; '));
+});
+
+test('guard: an undeclared import change must keep the module and every name; a moved closing line is fine', () => {
+  const imp = "import { f } from '../src/a';";
+  const body = "it('a', () => { expect(f()).toBe(3); });";
+  for (const [to, ok] of [
+    ["import { f, g } from '../src/a';", true],
+    ["import { f } from '../src/fake';", false],
+    ["import { g as f } from '../src/a';", false],
+    ["import type { f } from '../src/a';", false],
+  ]) {
+    const { before, after } = existingFile(`${imp}\n${body}\n`, `${to}\n${body}\n`);
+    const r = checkPatch(hunkPatch([['@@ -1,2 +1,2 @@', `-${imp}`, `+${to}`, ` ${body}`]]), before, after);
+    assert.equal(r.ok, ok, `${to}: ${r.violations.join('; ')}`);
+  }
+  // A new test appended inside a describe block: the diff removes "});" and adds it back after the test.
+  const d = "describe('d', () => {\n  it('a', () => { expect(f()).toBe(3); });\n});\n";
+  const d2 = "describe('d', () => {\n  it('a', () => { expect(f()).toBe(3); });\n  it('b', () => { expect(f()).toBe(3); });\n});\n";
+  const dirs = existingFile(d, d2);
+  const r = checkPatch(hunkPatch([['@@ -2,2 +2,3 @@', "   it('a', () => { expect(f()).toBe(3); });", '-});', "+  it('b', () => { expect(f()).toBe(3); });", '+});']]), dirs.before, dirs.after);
+  assert.equal(r.ok, true, r.violations.join('; '));
+});
+
+test('guard: a closing line moved inside a multi-line expectation needs a declaration', () => {
+  const p = 'backend/tests/x.test.ts';
+  // toEqual({ a: { x: 1 }, b: 2 }) becomes toEqual({ a: { x: 1, b: 2 } }): the same lines, another order.
+  const beforeText = "it('a', () => {\n  expect(f()).toEqual({\n    a: {\n      x: 1,\n    },\n    b: 2,\n  });\n});\n";
+  const afterText = "it('a', () => {\n  expect(f()).toEqual({\n    a: {\n      x: 1,\n    b: 2,\n    },\n  });\n});\n";
+  const { before, after } = existingFile(beforeText, afterText);
+  const patch = hunkPatch([['@@ -4,3 +4,3 @@', '       x: 1,', '-    },', '     b: 2,', '+    },']]);
+  const undeclared = checkPatch(patch, before, after);
+  assert.equal(undeclared.ok, false);
+  assert.ok(undeclared.violations.some((v) => v.includes('lines removed or moved in an existing test file that is not in human_test_updates: },')), undeclared.violations.join('; '));
+  assert.equal(checkPatch(patch, before, after, { humanUpdates: [p] }).ok, true);
+  // The same move, followed by an appended test with the same lines: the closing line still has to come
+  // back in its own change block.
+  const appended = "it('b', () => {\n  expect(f()).toEqual({\n    a: {\n      x: 1,\n    },\n    b: 2,\n  });\n});\n";
+  const two = existingFile(beforeText, afterText + appended);
+  const twoPatch = hunkPatch([['@@ -4,5 +4,13 @@', '       x: 1,', '-    },', '     b: 2,', '+    },', '   });', ' });', ...appended.trimEnd().split('\n').map((l) => `+${l}`)]]);
+  const twoR = checkPatch(twoPatch, two.before, two.after);
+  assert.equal(twoR.ok, false);
+  assert.ok(twoR.violations.some((v) => v.includes('not in human_test_updates: },')), twoR.violations.join('; '));
+});
+
 // --- scope ---------------------------------------------------------------------------------------
 
 const src = { path: 'backend/src/api/health.ts', kind: 'backend-src', added: 3, removed: 1 };
@@ -181,32 +312,45 @@ test('scope decisions', () => {
   assert.equal(decide({ files: [src, { path: '.claude/x', kind: 'agent-infra', added: 1, removed: 0 }], fork: false, headCommit: human, trustedMissing: [] }).decision, 'skip');
 });
 
+test('scope gives every skip a kind; a fork PR skips generation only', () => {
+  const kind = (o) => decide({ files: [src], fork: false, headCommit: human, trustedMissing: [], ...o }).skip_kind;
+  assert.equal(kind({ fork: true }), 'fork');
+  assert.equal(kind({ trustedMissing: ['x'] }), 'bootstrap');
+  assert.equal(kind({ files: [src, { path: '.github/workflows/pr-test-agent.yml', kind: 'agent-infra', added: 1, removed: 0 }] }), 'infra-edit');
+  assert.equal(kind({ files: Array.from({ length: 21 }, (_, i) => ({ ...src, path: `backend/src/f${i}.ts` })) }), 'size-cap');
+  // An infra edit from a fork is still an infra edit: it needs a human, not a baseline.
+  assert.equal(kind({ fork: true, files: [src, { path: '.claude/x', kind: 'agent-infra', added: 1, removed: 0 }] }), 'infra-edit');
+  // A fork PR whose head is a bot commit is treated as a bot commit.
+  assert.equal(kind({ fork: true, headCommit: bot }), 'bot-commit');
+});
+
 // --- verdict -------------------------------------------------------------------------------------
 
 const gen = { status: 'patch' };
 const verifyOk = { gate: { publish: true, reasons: [] }, classes: {}, candidate: [{ path: 'backend/tests/x.test.ts' }], candidate_tree_sha: 'f'.repeat(40) };
 const scopeGen = { decision: 'generate' };
+const B0 = { pr_induced: [], pre_existing: [], flaky: [], new_in_pr: [], inconclusive: [], head_failing: [] };
 
 test('verdict: published success and probable bug with published tests', () => {
-  assert.equal(computeVerdict({ scope: scopeGen, gen, verify: verifyOk, publish: { status: 'published' } }).state, 'success');
-  const pb = computeVerdict({ scope: scopeGen, gen, verify: { ...verifyOk, classes: { probable_bug: ['bug'] } }, publish: { status: 'published' } });
+  assert.equal(computeVerdict({ scope: scopeGen, baseline: B0, gen, verify: verifyOk, publish: { status: 'published' } }).state, 'success');
+  const pb = computeVerdict({ scope: scopeGen, baseline: B0, gen, verify: { ...verifyOk, classes: { probable_bug: ['bug'] } }, publish: { status: 'published' } });
   assert.equal(pb.state, 'failure');
   assert.equal(pb.class, 'probable_bug');
   assert.equal(pb.published, true);
 });
 
 test('verdict: closed gate, superseded, status write failure', () => {
-  const closed = computeVerdict({ scope: scopeGen, gen, verify: { ...verifyOk, gate: { publish: false, reasons: [] }, classes: { test_failure: ['x: fail'] } } });
+  const closed = computeVerdict({ scope: scopeGen, baseline: B0, gen, verify: { ...verifyOk, gate: { publish: false, reasons: [] }, classes: { test_failure: ['x: fail'] } } });
   assert.equal(closed.class, 'test_failure');
-  assert.equal(computeVerdict({ scope: scopeGen, gen, verify: verifyOk, publish: { status: 'superseded' } }).state, 'success');
-  const st = computeVerdict({ scope: scopeGen, gen, verify: verifyOk, publish: { status: 'published', status_error: 'set status: HTTP 500' } });
+  assert.equal(computeVerdict({ scope: scopeGen, baseline: B0, gen, verify: verifyOk, publish: { status: 'superseded' } }).state, 'success');
+  const st = computeVerdict({ scope: scopeGen, baseline: B0, gen, verify: verifyOk, publish: { status: 'published', status_error: 'set status: HTTP 500' } });
   assert.equal(st.state, 'failure');
   assert.equal(st.class, 'infrastructure');
 });
 
 test('verdict: agent no-op with a probable bug is a failure', () => {
-  assert.equal(computeVerdict({ scope: scopeGen, gen: { status: 'no-op' } }).state, 'success');
-  const v = computeVerdict({ scope: scopeGen, gen: { status: 'no-op', probable_bugs: ['wrong comparison'] } });
+  assert.equal(computeVerdict({ scope: scopeGen, baseline: B0, gen: { status: 'no-op' } }).state, 'success');
+  const v = computeVerdict({ scope: scopeGen, baseline: B0, gen: { status: 'no-op', probable_bugs: ['wrong comparison'] } });
   assert.equal(v.state, 'failure');
   assert.equal(v.class, 'probable_bug');
 });
@@ -222,8 +366,8 @@ test('verdict: a bot-commit run copies the commit status and fails without one',
 test('verdict: missing reports are infrastructure failures', () => {
   assert.equal(computeVerdict({}).class, 'infrastructure');
   assert.equal(computeVerdict({ scope: scopeGen }).class, 'infrastructure');
-  assert.equal(computeVerdict({ scope: scopeGen, gen }).class, 'infrastructure');
-  assert.equal(computeVerdict({ scope: scopeGen, gen, verify: verifyOk }).class, 'infrastructure');
+  assert.equal(computeVerdict({ scope: scopeGen, baseline: B0, gen }).class, 'infrastructure');
+  assert.equal(computeVerdict({ scope: scopeGen, baseline: B0, gen, verify: verifyOk }).class, 'infrastructure');
 });
 
 test('status description stays within 140 characters', () => {
@@ -290,7 +434,7 @@ async function runPublish(opts) {
   const { dir, verify, patchText } = fixture();
   const { files } = checkCandidate({ verify, candidateDir: dir, patchText, testedSha: TESTED });
   const { api, calls } = mockApi(opts);
-  const out = await publish({ api, verify, files, testedSha: TESTED, branch: 'feat/x', prNumber: '8', runUrl: 'https://example/run', verdictInputs: { scope: scopeGen, gen, verify } });
+  const out = await publish({ api, verify, files, testedSha: TESTED, branch: 'feat/x', prNumber: '8', runUrl: 'https://example/run', verdictInputs: { scope: scopeGen, baseline: B0, gen, verify } });
   return { out, calls };
 }
 
@@ -327,7 +471,55 @@ test('publish records a status write that throws after the ref moved', async () 
     if (path.startsWith('/statuses/')) throw new Error('network down');
     return api(method, path, body);
   };
-  const out = await publish({ api: throwing, verify, files, testedSha: TESTED, branch: 'feat/x', prNumber: '8', runUrl: 'u', verdictInputs: { scope: scopeGen, gen, verify } });
+  const out = await publish({ api: throwing, verify, files, testedSha: TESTED, branch: 'feat/x', prNumber: '8', runUrl: 'u', verdictInputs: { scope: scopeGen, baseline: B0, gen, verify } });
   assert.equal(out.status, 'published');
   assert.match(out.status_error, /network down/);
+});
+
+test('publish keeps the commit sha when the ref PATCH response is lost but the ref moved', async () => {
+  const { dir, verify, patchText } = fixture();
+  const { files } = checkCandidate({ verify, candidateDir: dir, patchText, testedSha: TESTED });
+  const { api } = mockApi();
+  const lost = async (method, path, body) => {
+    if (method === 'PATCH' && path.startsWith('/git/refs/heads/')) throw new Error('socket hang up');
+    if (method === 'GET' && path.startsWith('/git/ref/heads/')) return { status: 200, json: { object: { sha: '9'.repeat(40) } } };
+    return api(method, path, body);
+  };
+  const out = await publish({ api: lost, verify, files, testedSha: TESTED, branch: 'feat/x', prNumber: '8', runUrl: 'u', verdictInputs: { scope: scopeGen, baseline: B0, gen, verify } });
+  assert.equal(out.status, 'published');
+  assert.equal(out.commit_sha, '9'.repeat(40));
+  assert.match(out.ref_update.message, /socket hang up/);
+  assert.equal(out.commit_status.http, 201);
+});
+
+test('publish records the commit sha and an error when the PATCH response is lost and the ref did not move', async () => {
+  const { dir, verify, patchText } = fixture();
+  const { files } = checkCandidate({ verify, candidateDir: dir, patchText, testedSha: TESTED });
+  const { api, calls } = mockApi();
+  const lost = async (method, path, body) => {
+    if (method === 'PATCH' && path.startsWith('/git/refs/heads/')) throw new Error('socket hang up');
+    if (method === 'GET' && path.startsWith('/git/ref/heads/')) return { status: 200, json: { object: { sha: TESTED } } };
+    return api(method, path, body);
+  };
+  const out = await publish({ api: lost, verify, files, testedSha: TESTED, branch: 'feat/x', prNumber: '8', runUrl: 'u', verdictInputs: { scope: scopeGen, baseline: B0, gen, verify } });
+  assert.equal(out.status, 'error');
+  assert.equal(out.commit_sha, '9'.repeat(40));
+  assert.match(out.reason, /is not on the branch/);
+  assert.ok(!calls.some((c) => c.path.startsWith('/statuses/')), 'no status on a commit that is not on the branch');
+});
+
+test('publish keeps recorded steps when a later call throws', async () => {
+  const { dir, verify, patchText } = fixture();
+  const { files } = checkCandidate({ verify, candidateDir: dir, patchText, testedSha: TESTED });
+  const { api } = mockApi();
+  const out = {};
+  const boom = async (method, path, body) => {
+    if (method === 'PATCH') throw new Error('socket hang up');
+    if (method === 'GET' && path.startsWith('/git/ref/')) throw new Error('still down');
+    return api(method, path, body);
+  };
+  await publish({ api: boom, verify, files, testedSha: TESTED, branch: 'feat/x', prNumber: '8', runUrl: 'u', verdictInputs: { scope: scopeGen, baseline: B0, gen, verify }, out });
+  assert.equal(out.status, 'error');
+  assert.equal(out.commit_sha, '9'.repeat(40));
+  assert.match(out.reason, /ref read back: unknown/);
 });

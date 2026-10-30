@@ -34,6 +34,59 @@ const BANNED = [
 ];
 const TEST_CASE = /\b(?:it|test)(?:\.(?:concurrent|sequential))?(?:\.each)?\s*[(`]/g;
 const EXPECT = /\bexpect(?:\.soft)?\s*\(/g;
+// Lines an undeclared edit may remove from an existing test file (fnd_dc1a984a1018765a). Every other removed or
+// changed line, such as `age: 3,` inside a multi-line toEqual, needs a human_test_updates declaration.
+// - a blank line;
+// - a line of closing brackets only, or the first or last line of a multi-line import, when the same
+//   line (trimmed) is added back in the same change block (a run of removed and added lines with no kept
+//   line between them), in the same order: a diff that moves `});` below an appended test does that.
+//   A closing line that comes back after a kept line has moved, and that can change an expectation;
+// - a single-line import, when an added import line names the same module and keeps every imported name.
+// A bare identifier line is not removable, because it can be an it.each row or a shorthand property.
+const BLANK = /^\s*$/;
+const CLOSING = /^\s*[)}\]][)}\];,\s]*$|^\s*\}\s*from\s+['"][^'"]+['"];?\s*$|^\s*import\s+(?:type\s+)?\{\s*$/;
+const IMPORT_LINE = /^\s*import\s+(type\s+)?(.*?)\s+from\s+(['"])([^'"]+)\3;?\s*$/;
+const SIDE_EFFECT_IMPORT = /^\s*import\s+(['"])[^'"]+\1;?\s*$/;
+
+// Names bound by a single-line import clause, as "kind:text" tokens (default, namespace, named with alias).
+function importNames(clause) {
+  const names = new Set();
+  const braces = /\{([^}]*)\}/.exec(clause);
+  for (const n of (braces ? braces[1] : '').split(',').map((x) => x.trim().replace(/\s+/g, ' ')).filter(Boolean)) names.add(`named:${n}`);
+  const rest = clause.replace(/\{[^}]*\}/, '').split(',').map((x) => x.trim()).filter(Boolean);
+  for (const r of rest) names.add(r.startsWith('*') ? `ns:${r.replace(/\s+/g, ' ')}` : `default:${r}`);
+  return names;
+}
+
+// The removed lines that an undeclared edit may not make. blocks: the change blocks of one file, each
+// { removed, added } (see parsePatch). Assertion lines are left to the assertion rule.
+export function undeclaredRemovals(blocks) {
+  const allAdded = blocks.flatMap((b) => b.added);
+  const addedTrimmed = allAdded.map((l) => l.trim());
+  const addedImports = allAdded.map((l) => IMPORT_LINE.exec(l)).filter(Boolean);
+  const bad = [];
+  for (const block of blocks) {
+    const here = block.added.map((l) => l.trim());
+    let j = 0;
+    for (const line of block.removed) {
+      if (BLANK.test(line) || ASSERTION.test(line)) continue;
+      if (CLOSING.test(line)) {
+        while (j < here.length && here[j] !== line.trim()) j++;
+        if (j < here.length) { j++; continue; }
+        bad.push(line); continue;
+      }
+      if (SIDE_EFFECT_IMPORT.test(line)) { if (addedTrimmed.includes(line.trim())) continue; bad.push(line); continue; }
+      const m = IMPORT_LINE.exec(line);
+      if (m) {
+        const before = importNames(m[2]);
+        const kept = addedImports.some((a) => a[4] === m[4] && Boolean(a[1]) === Boolean(m[1]) && [...before].every((n) => importNames(a[2]).has(n)));
+        if (kept) continue;
+      }
+      bad.push(line);
+    }
+  }
+  return bad;
+}
 // An assertion on a line: expect(...) or a chained matcher such as .toBe( / .rejects.
 const ASSERTION = /\bexpect(?:\.soft)?\s*\(|\.(?:to[A-Z]\w*|rejects|resolves)\b/;
 // Matchers that accept almost any value. Replacing an existing assertion with one of them weakens it.
@@ -45,8 +98,11 @@ export function parsePatch(text) {
   for (const chunk of chunks) {
     const lines = chunk.split('\n');
     const m = /^diff --git a\/(.+?) b\/(.+)$/.exec(lines[0]);
-    const f = { a: m ? m[1] : null, b: m ? m[2] : null, status: 'modified', added: 0, removed: 0, addedLines: [], removedLines: [], flags: [] };
+    const f = { a: m ? m[1] : null, b: m ? m[2] : null, status: 'modified', added: 0, removed: 0, addedLines: [], removedLines: [], blocks: [], flags: [] };
     let inHunk = false;
+    // A change block: removed and added lines with no kept line or hunk header between them.
+    let block = null;
+    const inBlock = () => { if (!block) { block = { removed: [], added: [] }; f.blocks.push(block); } return block; };
     for (const line of lines.slice(1)) {
       if (!inHunk) {
         if (line.startsWith('new file mode ')) { f.status = 'added'; f.newMode = line.slice(14).trim(); }
@@ -58,9 +114,10 @@ export function parsePatch(text) {
         else if (line.startsWith('@@')) inHunk = true;
         continue;
       }
+      if (line.startsWith('@@') || line.startsWith(' ') || line === '') { block = null; continue; }
       // Inside a hunk every +/- line is content, also "+++x" or "---x". File headers come before the first @@.
-      if (line.startsWith('+')) { f.added++; f.addedLines.push(line.slice(1)); }
-      else if (line.startsWith('-')) { f.removed++; f.removedLines.push(line.slice(1)); }
+      if (line.startsWith('+')) { f.added++; f.addedLines.push(line.slice(1)); inBlock().added.push(line.slice(1)); }
+      else if (line.startsWith('-')) { f.removed++; f.removedLines.push(line.slice(1)); inBlock().removed.push(line.slice(1)); }
       else if (line.startsWith('GIT binary patch')) f.flags.push('binary');
     }
     if (f.newMode && f.newMode !== '100644') f.flags.push(f.newMode === '120000' ? 'symlink' : `mode ${f.newMode}`);
@@ -118,6 +175,12 @@ export function checkPatch(patchText, beforeRoot, afterRoot, { humanUpdates = []
       // for a legitimate edit plus a weak-matcher test in the same file; nothing is weakened by it.
       const assertionsRemoved = f.removedLines.some((l) => ASSERTION.test(l));
       if (assertionsRemoved && !declared.has(f.b)) violations.push(`${f.b}: assertion lines removed from an existing test file that is not in human_test_updates (no-weakening)`);
+      // Outside human_test_updates an existing test file may lose only blank lines, kept imports and closing
+      // brackets that come back in the same change block (see undeclaredRemovals). Anything else (an it.each
+      // table row, a setup line, a changed value or a moved bracket inside a multi-line expectation) could
+      // change or drop a case unseen.
+      const otherRemoved = undeclaredRemovals(f.blocks);
+      if (otherRemoved.length && !declared.has(f.b)) violations.push(`${f.b}: lines removed or moved in an existing test file that is not in human_test_updates: ${otherRemoved[0].trim().slice(0, 120)}`);
       if (f.removed > 0 && f.addedLines.some((l) => WEAK_MATCHER.test(l))) violations.push(`${f.b}: no-weakening rule: this existing test file loses lines and gains a weak matcher (toBeDefined/toBeTruthy/toBeFalsy/toBeUndefined/expect.any/expect.anything); use an exact matcher, or a human pushes this change`);
       editedExisting.push(e);
     }
