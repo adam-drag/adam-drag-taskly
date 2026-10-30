@@ -80,6 +80,22 @@ export function undeclaredRemovals(removedLines, addedLines) {
   }
   return bad;
 }
+// The lines of an existing test file must stay in their order: the before file (without blank lines and
+// single-line imports, which undeclaredRemovals checks) must be a subsequence of the after file. Appending a
+// test keeps that, also when the diff shows `});` as removed and added again. Moving a closing bracket to
+// another place in a multi-line expectation does not. Returns the first before line that is not kept in
+// order, or null.
+export function firstLineOutOfOrder(before, after) {
+  const seq = (text) => text.split('\n').map((l) => l.trim()).filter((l) => l && !IMPORT_LINE.test(l) && !SIDE_EFFECT_IMPORT.test(l));
+  const b = seq(before), a = seq(after);
+  let j = 0;
+  for (const line of b) {
+    while (j < a.length && a[j] !== line) j++;
+    if (j === a.length) return line;
+    j++;
+  }
+  return null;
+}
 // An assertion on a line: expect(...) or a chained matcher such as .toBe( / .rejects.
 const ASSERTION = /\bexpect(?:\.soft)?\s*\(|\.(?:to[A-Z]\w*|rejects|resolves)\b/;
 // Matchers that accept almost any value. Replacing an existing assertion with one of them weakens it.
@@ -169,6 +185,8 @@ export function checkPatch(patchText, beforeRoot, afterRoot, { humanUpdates = []
       // a changed value inside a multi-line expectation) could change or drop a case unseen.
       const otherRemoved = undeclaredRemovals(f.removedLines.filter((l) => !ASSERTION.test(l)), f.addedLines);
       if (otherRemoved.length && !declared.has(f.b)) violations.push(`${f.b}: lines removed from an existing test file that is not in human_test_updates: ${otherRemoved[0].trim().slice(0, 120)}`);
+      const moved = otherRemoved.length ? null : firstLineOutOfOrder(before, after);
+      if (moved !== null && !declared.has(f.b)) violations.push(`${f.b}: lines moved in an existing test file that is not in human_test_updates: ${moved.slice(0, 120)}`);
       if (f.removed > 0 && f.addedLines.some((l) => WEAK_MATCHER.test(l))) violations.push(`${f.b}: no-weakening rule: this existing test file loses lines and gains a weak matcher (toBeDefined/toBeTruthy/toBeFalsy/toBeUndefined/expect.any/expect.anything); use an exact matcher, or a human pushes this change`);
       editedExisting.push(e);
     }

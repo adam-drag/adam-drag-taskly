@@ -268,6 +268,19 @@ test('guard: an undeclared import change must keep the module and every name; a 
   assert.equal(r.ok, true, r.violations.join('; '));
 });
 
+test('guard: a closing line moved inside a multi-line expectation needs a declaration', () => {
+  const p = 'backend/tests/x.test.ts';
+  // toEqual({ a: { x: 1 }, b: 2 }) becomes toEqual({ a: { x: 1, b: 2 } }): the same lines, another order.
+  const beforeText = "it('a', () => {\n  expect(f()).toEqual({\n    a: {\n      x: 1,\n    },\n    b: 2,\n  });\n});\n";
+  const afterText = "it('a', () => {\n  expect(f()).toEqual({\n    a: {\n      x: 1,\n    b: 2,\n    },\n  });\n});\n";
+  const { before, after } = existingFile(beforeText, afterText);
+  const patch = hunkPatch([['@@ -4,3 +4,3 @@', '       x: 1,', '-    },', '     b: 2,', '+    },']]);
+  const undeclared = checkPatch(patch, before, after);
+  assert.equal(undeclared.ok, false);
+  assert.ok(undeclared.violations.some((v) => v.includes('lines moved in an existing test file that is not in human_test_updates: ')), undeclared.violations.join('; '));
+  assert.equal(checkPatch(patch, before, after, { humanUpdates: [p] }).ok, true);
+});
+
 // --- scope ---------------------------------------------------------------------------------------
 
 const src = { path: 'backend/src/api/health.ts', kind: 'backend-src', added: 3, removed: 1 };
