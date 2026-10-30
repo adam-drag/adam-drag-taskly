@@ -18,6 +18,19 @@ it('lists tasks from the repository', async () => {
   expect(response.body).toEqual([todo]);
   expect(repository.list).toHaveBeenCalledOnce();
 });
+it.each([['true', true], ['false', false]])('filters tasks by completed=%s', async (value, expected) => {
+  const { app, repository } = setup();
+  const response = await request(app).get('/api/todos').query({ completed: value });
+  expect(response.status).toBe(200);
+  expect(repository.list).toHaveBeenCalledWith({ completed: expected });
+});
+it.each(['yes', '1', ''])('rejects invalid completed filter %j with 422', async (value) => {
+  const { app, repository } = setup();
+  const response = await request(app).get('/api/todos').query({ completed: value });
+  expect(response.status).toBe(422);
+  expect(Array.isArray(response.body.detail)).toBe(true);
+  expect(repository.list).not.toHaveBeenCalled();
+});
 it('creates tasks with trimmed input and defaults', async () => {
   const { app, repository } = setup();
   const response = await request(app).post('/api/todos').send({ title: '  Plan the sprint  ', priority: 'high' });

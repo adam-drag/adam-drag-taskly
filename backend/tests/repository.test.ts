@@ -17,6 +17,12 @@ it('lists tasks in newest-first order and maps database rows', async () => {
   expect(await repository.list()).toEqual([todo]);
   expect(findMany).toHaveBeenCalledWith({ orderBy: [{ created_at: 'desc' }, { id: 'desc' }] });
 });
+it.each([true, false])('lists only tasks with completed=%s when filtered', async (completed) => {
+  const { database, repository } = setup();
+  const findMany = vi.spyOn(database.todo, 'findMany').mockResolvedValue([record]);
+  expect(await repository.list({ completed })).toEqual([todo]);
+  expect(findMany).toHaveBeenCalledWith({ where: { completed }, orderBy: [{ created_at: 'desc' }, { id: 'desc' }] });
+});
 it('gets a task by ID and handles missing tasks', async () => {
   const { database, repository } = setup();
   const findUnique = vi.spyOn(database.todo, 'findUnique').mockResolvedValueOnce(record).mockResolvedValueOnce(null);

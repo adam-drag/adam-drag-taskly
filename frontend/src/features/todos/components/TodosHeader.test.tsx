@@ -5,6 +5,17 @@ import { TodosHeader } from './TodosHeader'
 
 vi.mock('../../../design-system', () => import('../../../design-system/mocks'))
 
+it('shows the completed count, including zero, and hides it when unknown', () => {
+  const { rerender } = render(
+    <TodosHeader disabled={false} onCreate={vi.fn()} />,
+  )
+  expect(screen.queryByText(/completed$/)).not.toBeInTheDocument()
+  rerender(<TodosHeader disabled={false} onCreate={vi.fn()} completedCount={0} />)
+  expect(screen.getByText('0 completed')).toBeVisible()
+  rerender(<TodosHeader disabled={false} onCreate={vi.fn()} completedCount={4} />)
+  expect(screen.getByText('4 completed')).toBeVisible()
+})
+
 it('invokes creation when enabled and blocks it when disabled', async () => {
   const user = userEvent.setup()
   const onCreate = vi.fn()
