@@ -7,6 +7,7 @@ import { TodoEditor } from './components/TodoEditor'
 import { TodoFilters } from './components/TodoFilters'
 import { TodoList } from './components/TodoList'
 import { TodosHeader } from './components/TodosHeader'
+import { useCompletedCountQuery } from './hooks/useCompletedCountQuery'
 import { useTodoFilters } from './hooks/useTodoFilters'
 import { useTodosBusy } from './hooks/useTodosBusy'
 import { useTodosQuery } from './hooks/useTodosQuery'
@@ -15,6 +16,7 @@ import type { Todo } from './types'
 
 export function TodosPage() {
   const todosQuery = useTodosQuery()
+  const completedCount = useCompletedCountQuery()
   const todos = todosQuery.data ?? []
   const filters = useTodoFilters(todos)
   const toggleTodo = useUpdateTodoMutation()
@@ -51,6 +53,7 @@ export function TodosPage() {
         <TodosHeader
           disabled={todosQuery.isPending || busy}
           onCreate={() => setEditor('new')}
+          completedCount={completedCount.data}
         />
         <TodoFilters
           filter={filters.filter}
