@@ -47,6 +47,9 @@ test('baseline: a missing report or a killed run on either side is inconclusive'
   const passing = { numFailedTests: 0, testResults: [{ status: 'passed' }] };
   assert.equal(runProblem({ status: 1, signal: null, json: failing }), null);
   assert.equal(runProblem({ status: 0, signal: null, json: passing }), null);
+  // A null entry in an untrusted report counts as a failure; it does not throw.
+  assert.equal(runProblem({ status: 1, signal: null, json: { numFailedTests: 0, testResults: [null] } }), null);
+  assert.equal(runThresholdMiss({ status: 1, signal: null, json: { numFailedTests: 0, testResults: [null] }, stdout: 'ERROR: Coverage for lines (1%) does not meet global threshold (80%)' }), false);
   // A non-zero exit needs a reason: a failing test or a named coverage threshold.
   assert.equal(runProblem({ status: 1, signal: null, json: passing, stdout: '', stderr: 'Error: something else' }), 'exited 1 with every test passing and no coverage-threshold message');
   const threshold = { status: 1, signal: null, json: passing, stdout: '', stderr: 'ERROR: Coverage for lines (90%) does not meet "src/a.ts" threshold (100%)' };
