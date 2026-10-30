@@ -4,7 +4,15 @@
 //   node verify.mjs verify --dir <clean git checkout of the tested head> --patch <patch> --files <after-content dir>
 //                   --scope <scope.json> --guard <guard.json> [--result <agent result.json>] [--baseline <baseline.json>]
 //                   [--head-sha <sha>] --attempt <n> --out <verify.json> [--feedback <feedback.md>]
-//                   [--candidate-out <dir>] --work <scratch dir>
+//                   [--candidate-out <dir>] --work <scratch dir> [--install]
+//                   [--sandbox-user <user> --sandbox-root <dir>]
+//
+// PR code (npm ci, prisma generate, tsc, vitest, and the agent's tests) never runs in --dir or as this
+// process. The candidate tree is written out from git into a copy under the sandbox root, and every command
+// runs there through sandbox.mjs: as --sandbox-user when given (the workflow), else as this user (local
+// runs, node tests). This script is loaded before any PR command runs, records the candidate identity
+// (blob ids, tree id, and a hash of every file of the copy) before the first one, kills every PR process
+// after each one, and checks the copy against the recorded hashes before it writes its result.
 //
 // The baseline (existing suites on head and merge base) lives in .github/test-agent/baseline.mjs.
 // Pass/fail comes from the vitest JSON reporter, coverage from coverage-summary.json. A non-zero coverage run
@@ -17,6 +25,7 @@ import { existsSync, lstatSync, mkdirSync, readFileSync, rmSync, writeFileSync }
 import { dirname, join, relative, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { parsePatch } from './guard.mjs';
+import { IsolationError, checkoutIndex, createSandbox, manifest, manifestChanges } from './sandbox.mjs';
 
 export const FEEDBACK_CAPS = { perFile: 3 * 1024, total: 12 * 1024 };
 const MAX_WORKERS = '--maxWorkers=4';
@@ -24,42 +33,86 @@ const RUNS = 3;
 const ANSI = /\u001b\[[0-9;?]*[ -\/]*[@-~]/g;
 export const stripAnsi = (s) => String(s ?? '').replace(ANSI, '');
 
-function parseArgs(argv) {
-  const args = { mode: argv[0] };
-  for (let i = 1; i < argv.length; i++) if (argv[i].startsWith('--')) args[argv[i].slice(2)] = argv[++i];
+// Flags without a value. Every other flag takes the next token, which may not start with "--": a missing
+// value is an error, never a silent swallow of the next flag (which once turned off the sandbox user).
+export const BOOLEAN_FLAGS = new Set(['install']);
+export function parseCliArgs(argv) {
+  const args = {};
+  for (let i = 0; i < argv.length; i++) {
+    if (!argv[i].startsWith('--')) throw new Error(`unexpected argument ${argv[i]}`);
+    const key = argv[i].slice(2);
+    if (BOOLEAN_FLAGS.has(key)) { args[key] = true; continue; }
+    const value = argv[i + 1];
+    if (value === undefined || value.startsWith('--')) throw new Error(`--${key} needs a value`);
+    args[key] = value;
+    i++;
+  }
   return args;
 }
+function parseArgs(argv) {
+  return { mode: argv[0], ...parseCliArgs(argv.slice(1)) };
+}
 const readJson = (p) => JSON.parse(readFileSync(p, 'utf8'));
-const env = () => ({ PATH: process.env.PATH, HOME: process.env.HOME, LANG: process.env.LANG || 'C.UTF-8', TZ: 'UTC' });
 
-export function run(cmd, args, cwd, log) {
-  const t0 = Date.now();
-  const r = spawnSync(cmd, args, { cwd, env: env(), encoding: 'utf8', maxBuffer: 256 * 1024 * 1024, timeout: 10 * 60 * 1000 });
-  const ms = Date.now() - t0;
-  if (log) writeFileSync(log, `$ ${cmd} ${args.join(' ')}\n(cwd ${cwd}, exit ${r.status}, signal ${r.signal}, ${ms} ms)\n--- stdout\n${stripAnsi(r.stdout)}\n--- stderr\n${stripAnsi(r.stderr)}\n`);
-  return { status: r.status, signal: r.signal, stdout: r.stdout ?? '', stderr: r.stderr ?? '', ms };
+// One PR-controlled command through the sandbox (which kills what it leaves behind). The log is written by
+// this process into a trusted directory.
+export function run(box, cmd, args, cwd, log) {
+  const r = box.exec(cmd, args, cwd);
+  if (log) writeFileSync(log, `$ ${cmd} ${args.join(' ')}\n(cwd ${cwd}, ${box.mode}${box.user ? ` user ${box.user}` : ''}, exit ${r.status}, signal ${r.signal}, ${r.ms} ms${r.error ? `, ${r.error}` : ''})\n--- stdout\n${stripAnsi(r.stdout)}\n--- stderr\n${stripAnsi(r.stderr)}\n`);
+  return r;
 }
 
-export function vitest(pkgDir, outFile, { coverageDir, files = [], log } = {}) {
+// outFile and coverageDir must be in a directory the sandbox can write. The JSON is read after the run,
+// as untrusted data.
+export function vitest(box, pkgDir, outFile, { coverageDir, files = [], log } = {}) {
   const args = ['run', MAX_WORKERS, '--reporter=json', `--outputFile=${outFile}`];
   if (coverageDir) args.push('--coverage', `--coverage.reportsDirectory=${coverageDir}`, '--coverage.reportOnFailure=true');
   args.push(...files);
-  const r = run(join(pkgDir, 'node_modules/.bin/vitest'), args, pkgDir, log);
-  const json = existsSync(outFile) ? readJson(outFile) : null;
+  const r = run(box, join(pkgDir, 'node_modules/.bin/vitest'), args, pkgDir, log);
+  const json = box.readJson(outFile);
   return { ...r, json };
+}
+
+// npm ci without lifecycle scripts, plus prisma generate for the backend. Returns one failure line per
+// failed package, in the form "<pkg> <side>: <command> failed (exit n)".
+export function install(box, treeDir, side, packages, logDir) {
+  const failures = [];
+  for (const pkg of packages) {
+    const cwd = join(treeDir, pkg);
+    const ci = run(box, 'npm', ['ci', '--ignore-scripts', '--no-audit', '--no-fund'], cwd, join(logDir, `install-${side.replace(/\W+/g, '-')}-${pkg}-npm.log`));
+    if (ci.status !== 0) { failures.push(`${pkg} ${side}: npm ci failed (exit ${ci.status}${ci.signal ? `, ${ci.signal}` : ''})`); continue; }
+    if (pkg === 'backend') {
+      const pg = run(box, 'npx', ['--no-install', 'prisma', 'generate'], cwd, join(logDir, `install-${side.replace(/\W+/g, '-')}-${pkg}-prisma.log`));
+      if (pg.status !== 0) failures.push(`${pkg} ${side}: prisma generate failed (exit ${pg.status}${pg.signal ? `, ${pg.signal}` : ''})`);
+    }
+  }
+  return failures;
+}
+
+// The sandbox for a verify or baseline run: user mode when --sandbox-user is given.
+export function sandboxFromArgs(args, work) {
+  if (args['sandbox-user']) {
+    if (!args['sandbox-root']) throw new IsolationError('--sandbox-user needs --sandbox-root');
+    return createSandbox({ user: args['sandbox-user'], root: resolve(args['sandbox-root']) });
+  }
+  if (args['sandbox-root']) throw new IsolationError('--sandbox-root without --sandbox-user');
+  return createSandbox({ root: join(work, 'sandbox') });
 }
 
 // Per-test map keyed "<repo path> > <full name>", plus per-file status.
 export function indexResults(json, root) {
   const tests = {}, files = {};
-  for (const tr of json?.testResults ?? []) {
+  // The report is untrusted data: anything that is not the expected shape is skipped.
+  for (const tr of Array.isArray(json?.testResults) ? json.testResults : []) {
+    if (!tr || typeof tr.name !== 'string' || (tr.assertionResults != null && !Array.isArray(tr.assertionResults))) continue;
     const file = relative(root, tr.name).split('\\').join('/');
-    const failed = tr.status !== 'passed' || (tr.assertionResults ?? []).some((a) => a.status === 'failed');
-    files[file] = { status: failed ? 'failed' : 'passed', message: stripAnsi(tr.message || ''), tests: (tr.assertionResults ?? []).length };
+    const assertions = (tr.assertionResults ?? []).filter((a) => a && typeof a === 'object');
+    const failed = tr.status !== 'passed' || assertions.some((a) => a.status === 'failed');
+    files[file] = { status: failed ? 'failed' : 'passed', message: stripAnsi(tr.message || ''), tests: assertions.length };
     // A file that failed without a failed assertion (an import error, a hook error, a failure after the
     // tests) gets one synthetic entry, so the per-test view never loses a failed file.
-    if (tr.status !== 'passed' && !(tr.assertionResults ?? []).some((a) => a.status === 'failed')) tests[`${file} > (file failed to run)`] = { status: 'failed', failure: stripAnsi(tr.message || '').split(`${root}/`).join('') };
-    for (const a of tr.assertionResults ?? []) {
+    if (tr.status !== 'passed' && !assertions.some((a) => a.status === 'failed')) tests[`${file} > (file failed to run)`] = { status: 'failed', failure: stripAnsi(tr.message || '').split(`${root}/`).join('') };
+    for (const a of assertions) {
       tests[`${file} > ${a.fullName}`] = { status: a.status, failure: stripAnsi((a.failureMessages ?? []).join('\n')).split(`${root}/`).join('') };
     }
   }
@@ -71,19 +124,20 @@ export function totals(json) {
   return { tests: json.numTotalTests, passed: json.numPassedTests, failed: json.numFailedTests, skipped: (json.numPendingTests ?? 0) + (json.numTodoTests ?? 0), suites: json.numTotalTestSuites, success: json.success };
 }
 
-export function coverageFor(summaryPath, root, paths) {
-  if (!existsSync(summaryPath)) return { error: 'coverage-summary.json missing' };
-  const summary = readJson(summaryPath);
+// box: the sandbox that wrote the summary; the file is untrusted data and read as such.
+export function coverageFor(summaryPath, root, paths, box) {
+  const summary = box.readJson(summaryPath);
+  if (!summary || typeof summary !== 'object') return { error: 'coverage-summary.json missing' };
   const byRel = {};
   for (const [k, v] of Object.entries(summary)) byRel[k === 'total' ? 'total' : relative(root, k).split('\\').join('/')] = v;
-  const pick = (v) => v && { lines: v.lines.pct, statements: v.statements.pct, branches: v.branches.pct, functions: v.functions.pct };
+  const pick = (v) => v && { lines: v.lines?.pct ?? null, statements: v.statements?.pct ?? null, branches: v.branches?.pct ?? null, functions: v.functions?.pct ?? null };
   const out = { total: pick(byRel.total) };
   for (const p of paths) out[p] = pick(byRel[p]) ?? null;
   return out;
 }
 
-function tsc(pkgDir, root, log) {
-  const r = run(join(pkgDir, 'node_modules/.bin/tsc'), ['--noEmit', '-p', 'tsconfig.json'], pkgDir, log);
+function tsc(box, pkgDir, root, log) {
+  const r = run(box, join(pkgDir, 'node_modules/.bin/tsc'), ['--noEmit', '-p', 'tsconfig.json'], pkgDir, log);
   const errors = [];
   for (const line of stripAnsi(r.stdout).split('\n')) {
     const m = /^(.+?)\((\d+),(\d+)\): error (TS\d+): (.*)$/.exec(line);
@@ -138,7 +192,8 @@ export const THRESHOLD_MSG = /Coverage for [a-z]+ \([\d.]+%\) does not meet/i;
 // after-content per patch path (from the generate artifact). Probable-bug files are split off before any
 // check runs, so the candidate tree (head + other patch files) is exactly what the checks see and what
 // publish may write.
-export function verify(args) {
+// opts.sandbox replaces the sandbox from the arguments (tests).
+export function verify(args, opts = {}) {
   const scope = readJson(args.scope);
   const result = args.result && existsSync(args.result) ? readJson(args.result) : null;
   const guard = args.guard && existsSync(args.guard) ? readJson(args.guard) : null;
@@ -168,13 +223,12 @@ export function verify(args) {
   const reported = new Set((result?.probable_bugs ?? []).map((b) => b.test_file).filter(Boolean));
   for (const p of reported) if (!probable.some((x) => x.path === p)) out.probable_bug_files.push({ path: p, note: 'reported by the agent but not in the patch' });
 
-  // 2. Candidate tree: head + candidate files. Bind blob ids and the tree id before running anything.
-  for (const c of candidate) {
-    mkdirSync(dirname(join(dir, c.path)), { recursive: true });
-    writeFileSync(join(dir, c.path), c.bytes);
-  }
+  // 2. Candidate identity, before any PR code runs: blob ids, and the tree id of head + candidate files,
+  // computed in the runner-owned checkout with a throwaway index. The checkout itself is not changed.
+  const indexFile = join(work, 'candidate.index');
+  const treeSha = candidateTreeSha(dir, headSha, candidate, indexFile);
   out.candidate = candidate.map(({ path, mode, blob_sha, size }) => ({ path, mode, blob_sha, size }));
-  out.candidate_tree_sha = candidate.length ? candidateTreeSha(dir, headSha, candidate, join(work, 'candidate.index')) : null;
+  out.candidate_tree_sha = candidate.length ? treeSha : null;
   if (args['candidate-out']) {
     for (const c of candidate) {
       const dst = join(resolve(args['candidate-out']), c.path);
@@ -183,89 +237,126 @@ export function verify(args) {
     }
   }
 
-  // 3. Checks on exactly the candidate tree.
-  const packages = [...new Set([...scope.packages.filter((p) => p === 'backend' || p === 'frontend'), ...patch.map((f) => PKG_OF(f.b)).filter(Boolean)])].sort();
-  const fileTsc = new Map();
+  // 3. The tree the checks run on: that index written out as plain files (no .git), hashed file by file,
+  // then copied into the sandbox. Only the copy is ever given to PR code.
+  const box = opts.sandbox ?? sandboxFromArgs(args, work);
+  const tree = join(box.root, 'tree'), prOut = join(box.root, 'out');
+  out.isolation = { mode: box.mode, user: box.user, root: box.root, tree_check: null };
   const index = {};
-  for (const pkg of packages) {
-    const pkgDir = join(dir, pkg);
-    if (!existsSync(join(pkgDir, 'node_modules/.bin/vitest'))) { infra.push(`${pkg}: dependencies not installed`); continue; }
-    const t = tsc(pkgDir, dir, join(work, `tsc-${pkg}.log`));
-    if (!t.ok && !t.errors.length) infra.push(`${pkg}: tsc exited ${t.exit} without parseable errors`);
-    for (const e of t.errors) fileTsc.set(e.file, [...(fileTsc.get(e.file) ?? []), e]);
-    const covDir = join(work, `coverage-after-${pkg}`);
-    const full = vitest(pkgDir, join(work, `suite-${pkg}.json`), { coverageDir: covDir, log: join(work, `suite-${pkg}.log`) });
-    if (!full.json) infra.push(`${pkg}: full suite wrote no JSON report (exit ${full.status}${full.signal ? `, signal ${full.signal}` : ''})`);
-    else if (full.signal) infra.push(`${pkg}: full suite was killed (${full.signal})`);
-    const fi = indexResults(full.json, dir);
-    index[pkg] = fi;
-    const failedFiles = Object.entries(fi.files).filter(([, v]) => v.status !== 'passed').map(([k]) => k);
-    const allPassed = full.json ? full.json.numFailedTests === 0 && failedFiles.length === 0 : false;
-    let thresholdMiss = false;
-    if (full.json && full.status !== 0 && allPassed) {
-      if (THRESHOLD_MSG.test(stripAnsi(`${full.stdout}\n${full.stderr}`))) thresholdMiss = true;
-      else infra.push(`${pkg}: vitest exited ${full.status} with every test passing and no coverage-threshold message`);
+  const fileTsc = new Map();
+  const packages = [...new Set([...scope.packages.filter((p) => p === 'backend' || p === 'frontend'), ...patch.map((f) => PKG_OF(f.b)).filter(Boolean)])].sort();
+  let recorded = null;
+  try {
+    const staging = join(work, 'stage');
+    rmSync(staging, { recursive: true, force: true });
+    checkoutIndex(dir, indexFile, staging);
+    for (const c of candidate) {
+      const st = lstatSync(join(staging, c.path), { throwIfNoEntry: false });
+      if (!st?.isFile() || gitBlobSha(readFileSync(join(staging, c.path))) !== c.blob_sha) infra.push(`checkout changed the bytes of candidate file ${c.path}`);
     }
-    const changed = candidate.map((c) => c.path).filter((p) => PKG_OF(p) === pkg && isRunnableTest(p));
-    const reps = [];
-    for (let i = 1; i <= RUNS && changed.length; i++) {
-      const r = vitest(pkgDir, join(work, `rerun-${pkg}-${i}.json`), { files: changed.map((p) => p.slice(pkg.length + 1)), log: join(work, `rerun-${pkg}-${i}.log`) });
-      const ri = indexResults(r.json, dir);
-      if (!r.json) infra.push(`${pkg}: rerun ${i} wrote no JSON report (exit ${r.status})`);
-      else if (r.signal) infra.push(`${pkg}: rerun ${i} was killed (${r.signal})`);
-      else if (r.status !== 0 && changed.every((p) => ri.files[p]?.status === 'passed')) infra.push(`${pkg}: rerun ${i} exited ${r.status} with every candidate file passing`);
-      reps.push(ri);
-    }
-    out.packages[pkg] = {
-      tsc: { ok: t.ok, exit: t.exit, errors: t.errors.length, ms: t.ms },
-      suite: { exit: full.status, totals: totals(full.json), ms: full.ms, failed_files: failedFiles },
-      suite_before: baselineJson?.packages?.[pkg]?.head?.[0]?.totals ?? null,
-      threshold_miss: thresholdMiss,
-      changed_test_files: changed,
-    };
-    for (const c of candidate.filter((x) => PKG_OF(x.path) === pkg)) {
-      const runnable = isRunnableTest(c.path);
-      const passes = runnable ? reps.filter((r) => r.files[c.path]?.status === 'passed').length : null;
-      const inSuite = fi.files[c.path]?.status ?? (runnable ? 'missing' : 'n/a');
-      const tscErrors = fileTsc.get(c.path) ?? [];
-      let verdict;
-      if (!runnable) verdict = 'fixture';
-      else if (tscErrors.length || inSuite !== 'passed') verdict = 'fail';
-      else verdict = passes === RUNS ? 'pass' : passes === 0 ? 'fail' : 'flaky';
-      out.files.push({ path: c.path, package: pkg, verdict, runs: runnable ? `${passes}/${RUNS}` : 'n/a', in_full_suite: inSuite, tsc_errors: tscErrors.length });
-    }
-    out.coverage_after[pkg] = coverageFor(join(covDir, 'coverage-summary.json'), dir, touchedSrc(scope).filter((p) => PKG_OF(p) === pkg));
-    if (out.coverage_after[pkg].error) infra.push(`${pkg}: ${out.coverage_after[pkg].error}`);
-  }
+    recorded = manifest(staging);
+    box.stage(staging, tree);
+    box.mkdir(prOut);
 
-  // 4. Probable-bug files: evidence only, 3 runs on the tested head, then removed again.
-  for (const p of probable) {
-    const pkg = PKG_OF(p.path);
-    const entry = { path: p.path, blob_sha: p.blob_sha, reported: reported.has(p.path), runs: null, failed_runs: null };
-    if (pkg && isRunnableTest(p.path) && index[pkg]) {
-      const dst = join(dir, p.path);
-      mkdirSync(dirname(dst), { recursive: true });
-      writeFileSync(dst, p.bytes);
-      let failed = 0, ran = 0;
-      for (let i = 1; i <= RUNS; i++) {
-        const r = vitest(join(dir, pkg), join(work, `probable-bug-${pkg}-${i}.json`), { files: [p.path.slice(pkg.length + 1)], log: join(work, `probable-bug-${pkg}-${i}.log`) });
-        const st = indexResults(r.json, dir).files[p.path]?.status;
-        if (st) { ran++; if (st !== 'passed') failed++; }
+    // 4. Install and checks, on exactly that tree.
+    if (args.install) infra.push(...install(box, tree, 'head', packages, work));
+    for (const pkg of packages) {
+      const pkgDir = join(tree, pkg);
+      if (!existsSync(join(pkgDir, 'node_modules/.bin/vitest'))) { infra.push(`${pkg}: dependencies not installed`); continue; }
+      const t = tsc(box, pkgDir, tree, join(work, `tsc-${pkg}.log`));
+      if (!t.ok && !t.errors.length) infra.push(`${pkg}: tsc exited ${t.exit} without parseable errors`);
+      for (const e of t.errors) fileTsc.set(e.file, [...(fileTsc.get(e.file) ?? []), e]);
+      const covDir = join(prOut, `coverage-after-${pkg}`);
+      const full = vitest(box, pkgDir, join(prOut, `suite-${pkg}.json`), { coverageDir: covDir, log: join(work, `suite-${pkg}.log`) });
+      if (!full.json) infra.push(`${pkg}: full suite wrote no JSON report (exit ${full.status}${full.signal ? `, signal ${full.signal}` : ''})`);
+      else if (full.signal) infra.push(`${pkg}: full suite was killed (${full.signal})`);
+      const fi = indexResults(full.json, tree);
+      index[pkg] = fi;
+      const failedFiles = Object.entries(fi.files).filter(([, v]) => v.status !== 'passed').map(([k]) => k);
+      const allPassed = full.json ? full.json.numFailedTests === 0 && failedFiles.length === 0 : false;
+      let thresholdMiss = false;
+      if (full.json && full.status !== 0 && allPassed) {
+        if (THRESHOLD_MSG.test(stripAnsi(`${full.stdout}\n${full.stderr}`))) thresholdMiss = true;
+        else infra.push(`${pkg}: vitest exited ${full.status} with every test passing and no coverage-threshold message`);
       }
-      rmSync(dst);
-      entry.runs = ran; entry.failed_runs = failed;
+      const changed = candidate.map((c) => c.path).filter((p) => PKG_OF(p) === pkg && isRunnableTest(p));
+      const reps = [];
+      for (let i = 1; i <= RUNS && changed.length; i++) {
+        const r = vitest(box, pkgDir, join(prOut, `rerun-${pkg}-${i}.json`), { files: changed.map((p) => p.slice(pkg.length + 1)), log: join(work, `rerun-${pkg}-${i}.log`) });
+        const ri = indexResults(r.json, tree);
+        if (!r.json) infra.push(`${pkg}: rerun ${i} wrote no JSON report (exit ${r.status})`);
+        else if (r.signal) infra.push(`${pkg}: rerun ${i} was killed (${r.signal})`);
+        else if (r.status !== 0 && changed.every((p) => ri.files[p]?.status === 'passed')) infra.push(`${pkg}: rerun ${i} exited ${r.status} with every candidate file passing`);
+        reps.push(ri);
+      }
+      out.packages[pkg] = {
+        tsc: { ok: t.ok, exit: t.exit, errors: t.errors.length, ms: t.ms },
+        suite: { exit: full.status, totals: totals(full.json), ms: full.ms, failed_files: failedFiles },
+        suite_before: baselineJson?.packages?.[pkg]?.head?.[0]?.totals ?? null,
+        threshold_miss: thresholdMiss,
+        changed_test_files: changed,
+      };
+      for (const c of candidate.filter((x) => PKG_OF(x.path) === pkg)) {
+        const runnable = isRunnableTest(c.path);
+        const passes = runnable ? reps.filter((r) => r.files[c.path]?.status === 'passed').length : null;
+        const inSuite = fi.files[c.path]?.status ?? (runnable ? 'missing' : 'n/a');
+        const tscErrors = fileTsc.get(c.path) ?? [];
+        let verdict;
+        if (!runnable) verdict = 'fixture';
+        else if (tscErrors.length || inSuite !== 'passed') verdict = 'fail';
+        else verdict = passes === RUNS ? 'pass' : passes === 0 ? 'fail' : 'flaky';
+        out.files.push({ path: c.path, package: pkg, verdict, runs: runnable ? `${passes}/${RUNS}` : 'n/a', in_full_suite: inSuite, tsc_errors: tscErrors.length });
+      }
+      out.coverage_after[pkg] = coverageFor(join(covDir, 'coverage-summary.json'), tree, touchedSrc(scope).filter((p) => PKG_OF(p) === pkg), box);
+      if (out.coverage_after[pkg].error) infra.push(`${pkg}: ${out.coverage_after[pkg].error}`);
     }
-    out.probable_bug_files.push(entry);
+
+    // 5. Probable-bug files: evidence only, 3 runs on the tested head, then removed again.
+    for (const p of probable) {
+      const pkg = PKG_OF(p.path);
+      const entry = { path: p.path, blob_sha: p.blob_sha, reported: reported.has(p.path), runs: null, failed_runs: null };
+      if (pkg && isRunnableTest(p.path) && index[pkg]) {
+        const dst = join(tree, p.path);
+        box.writeFile(dst, p.bytes);
+        let failed = 0, ran = 0;
+        for (let i = 1; i <= RUNS; i++) {
+          const r = vitest(box, join(tree, pkg), join(prOut, `probable-bug-${pkg}-${i}.json`), { files: [p.path.slice(pkg.length + 1)], log: join(work, `probable-bug-${pkg}-${i}.log`) });
+          const st = indexResults(r.json, tree).files[p.path]?.status;
+          if (st) { ran++; if (st !== 'passed') failed++; }
+        }
+        box.remove(dst);
+        // A probable-bug path that exists at head gets its head bytes back, so the tree check sees the
+        // recorded tree.
+        if (recorded[p.path]) box.writeFile(dst, readFileSync(join(staging, p.path)));
+        entry.runs = ran; entry.failed_runs = failed;
+      }
+      out.probable_bug_files.push(entry);
+    }
+  } catch (e) {
+    if (!(e instanceof IsolationError)) throw e;
+    infra.push(`isolation failure: ${e.message}`);
   }
 
-  // 5. PR-induced failures from the baseline (empty when the workflow runs no baseline).
+  // 6. No PR process may outlive the checks, and the tree must still be the recorded one.
+  try {
+    box.reap();
+    const changed = recorded ? manifestChanges(tree, recorded) : null;
+    out.isolation.tree_check = changed === null ? 'not run' : changed.length ? `changed: ${changed.slice(0, 10).join(', ')}` : 'unchanged';
+    if (changed === null) infra.push('isolation failure: the tree was not staged');
+    else if (changed.length) infra.push(`candidate tree changed while PR code ran (${changed.length} file(s)): ${changed.slice(0, 5).join(', ')}`);
+  } catch (e) {
+    if (!(e instanceof IsolationError)) throw e;
+    infra.push(`isolation failure: ${e.message}`);
+  }
+
+  // 7. PR-induced failures from the baseline (empty when the workflow runs no baseline).
   for (const t of baselineJson?.pr_induced ?? []) {
     const now = index[t.package]?.tests[t.id];
     const action = (result?.pr_induced_failures ?? []).find((p) => p.test_id === t.id)?.action ?? null;
     out.pr_induced_status.push({ id: t.id, now: now ? now.status : 'not-found', agent_action: action, open: (now?.status ?? 'failed') !== 'passed' && action !== 'probable-bug' });
   }
 
-  // 6. Classes for the verdict, and the publish gate (all or nothing).
+  // 8. Classes for the verdict, and the publish gate (all or nothing).
   const tscFailing = Object.entries(out.packages).filter(([, v]) => !v.tsc.ok).map(([k]) => k);
   const badFiles = out.files.filter((f) => f.verdict === 'fail' || f.verdict === 'flaky');
   // With a baseline, a suite failure blocks only when the test passed on the head baseline (a regression)

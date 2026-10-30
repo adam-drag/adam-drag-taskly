@@ -222,6 +222,65 @@ test('guard refuses an import edit plus an appended weak-matcher test (accepted 
   assert.equal(checkPatch(patch, before, after).ok, false);
 });
 
+test('guard: an undeclared changed value inside a multi-line expectation needs a declaration (fnd_dc1a984a1018765a)', () => {
+  const p = 'backend/tests/x.test.ts';
+  const cases = [
+    ['age: 3,', 'age: 4,'],
+    ["name: 'Ada',", "name: 'Bob',"],
+    ['3,', '4,'],
+    ['})', '}, 2)'],
+  ];
+  for (const [from, to] of cases) {
+    const beforeText = `it('a', () => {\n  expect(f()).toEqual({\n    ${from}\n  });\n});\n`;
+    const afterText = beforeText.replace(from, to);
+    const { before, after } = existingFile(beforeText, afterText);
+    const patch = hunkPatch([['@@ -2,3 +2,3 @@', '   expect(f()).toEqual({', `-    ${from}`, `+    ${to}`, '   });']]);
+    const undeclared = checkPatch(patch, before, after);
+    assert.equal(undeclared.ok, false, from);
+    assert.ok(undeclared.violations.some((v) => v.includes(`not in human_test_updates: ${from}`)), `${from}: ${undeclared.violations.join('; ')}`);
+    const declared = checkPatch(patch, before, after, { humanUpdates: [p] });
+    assert.equal(declared.ok, true, `${from}: ${declared.violations.join('; ')}`);
+  }
+  // A changed closing line counts as a change too.
+  const close = existingFile("it('a', () => {\n  expect(f()).toEqual([\n    1,\n  ]);\n});\n", "it('a', () => {\n  expect(f()).toEqual([\n    1,\n  ], 2);\n});\n");
+  const closeR = checkPatch(hunkPatch([['@@ -3,2 +3,2 @@', '     1,', '-  ]);', '+  ], 2);']]), close.before, close.after);
+  assert.ok(closeR.violations.some((v) => v.includes('not in human_test_updates: ]);')), closeR.violations.join('; '));
+});
+
+test('guard: an undeclared import change must keep the module and every name; a moved closing line is fine', () => {
+  const imp = "import { f } from '../src/a';";
+  const body = "it('a', () => { expect(f()).toBe(3); });";
+  for (const [to, ok] of [
+    ["import { f, g } from '../src/a';", true],
+    ["import { f } from '../src/fake';", false],
+    ["import { g as f } from '../src/a';", false],
+    ["import type { f } from '../src/a';", false],
+  ]) {
+    const { before, after } = existingFile(`${imp}\n${body}\n`, `${to}\n${body}\n`);
+    const r = checkPatch(hunkPatch([['@@ -1,2 +1,2 @@', `-${imp}`, `+${to}`, ` ${body}`]]), before, after);
+    assert.equal(r.ok, ok, `${to}: ${r.violations.join('; ')}`);
+  }
+  // A new test appended inside a describe block: the diff removes "});" and adds it back after the test.
+  const d = "describe('d', () => {\n  it('a', () => { expect(f()).toBe(3); });\n});\n";
+  const d2 = "describe('d', () => {\n  it('a', () => { expect(f()).toBe(3); });\n  it('b', () => { expect(f()).toBe(3); });\n});\n";
+  const dirs = existingFile(d, d2);
+  const r = checkPatch(hunkPatch([['@@ -2,2 +2,3 @@', "   it('a', () => { expect(f()).toBe(3); });", '-});', "+  it('b', () => { expect(f()).toBe(3); });", '+});']]), dirs.before, dirs.after);
+  assert.equal(r.ok, true, r.violations.join('; '));
+});
+
+test('guard: a closing line moved inside a multi-line expectation needs a declaration', () => {
+  const p = 'backend/tests/x.test.ts';
+  // toEqual({ a: { x: 1 }, b: 2 }) becomes toEqual({ a: { x: 1, b: 2 } }): the same lines, another order.
+  const beforeText = "it('a', () => {\n  expect(f()).toEqual({\n    a: {\n      x: 1,\n    },\n    b: 2,\n  });\n});\n";
+  const afterText = "it('a', () => {\n  expect(f()).toEqual({\n    a: {\n      x: 1,\n    b: 2,\n    },\n  });\n});\n";
+  const { before, after } = existingFile(beforeText, afterText);
+  const patch = hunkPatch([['@@ -4,3 +4,3 @@', '       x: 1,', '-    },', '     b: 2,', '+    },']]);
+  const undeclared = checkPatch(patch, before, after);
+  assert.equal(undeclared.ok, false);
+  assert.ok(undeclared.violations.some((v) => v.includes('lines moved in an existing test file that is not in human_test_updates: ')), undeclared.violations.join('; '));
+  assert.equal(checkPatch(patch, before, after, { humanUpdates: [p] }).ok, true);
+});
+
 // --- scope ---------------------------------------------------------------------------------------
 
 const src = { path: 'backend/src/api/health.ts', kind: 'backend-src', added: 3, removed: 1 };

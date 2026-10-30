@@ -20,19 +20,25 @@ const LABEL = {
   threshold_miss: 'coverage threshold',
 };
 
-// What the baseline found open on the PR head (plan 2.7), as verdict notes.
+// What the baseline found open on the PR head (plan 2.7), by verdict class.
 // verified: false when no verify step ran (fork, agent no-op). Then PR-induced failures and a coverage
 // threshold miss on head also count; with a verify step, verify reports those for the candidate tree.
-export function baselineOpen(baseline, { verified }) {
-  if (!baseline) return [];
-  return [
-    ...(verified ? [] : (baseline.pr_induced ?? []).map((t) => `PR-induced failure on head: ${t.id}`)),
-    ...(baseline.pre_existing ?? []).map((t) => `pre-existing failure on head: ${t.id}`),
-    ...(baseline.flaky ?? []).map((t) => `flaky on head (${t.head_runs}): ${t.id}`),
-    ...(baseline.new_in_pr ?? []).map((t) => `new test failing on head: ${t.id}`),
-    ...(verified ? [] : (baseline.threshold_miss ?? []).map((p) => `coverage threshold missed on head in ${p}`)),
-  ];
+// A threshold miss keeps its own class, so the headline follows ORDER like every other class.
+export function baselineClasses(baseline, { verified }) {
+  if (!baseline) return { open_failure: [], threshold_miss: [] };
+  return {
+    open_failure: [
+      ...(verified ? [] : (baseline.pr_induced ?? []).map((t) => `PR-induced failure on head: ${t.id}`)),
+      ...(baseline.pre_existing ?? []).map((t) => `pre-existing failure on head: ${t.id}`),
+      ...(baseline.flaky ?? []).map((t) => `flaky on head (${t.head_runs}): ${t.id}`),
+      ...(baseline.new_in_pr ?? []).map((t) => `new test failing on head: ${t.id}`),
+    ],
+    threshold_miss: verified ? [] : (baseline.threshold_miss ?? []).map((p) => `coverage threshold missed on head in ${p}`),
+  };
 }
+
+// First class in ORDER that has an entry, or null.
+const firstOpen = (classes) => ORDER.find((c) => (classes[c] ?? []).length) ?? null;
 
 // inputs: { scope, scopeJob, baseline, baselineJob, gen, genJob, verify, verifyJob, publish, publishJob,
 //           botStatus, botStatusError, attempt }
@@ -69,10 +75,13 @@ export function computeVerdict(i) {
     notes.push(...i.baseline.inconclusive.map((m) => `baseline inconclusive: ${m}`));
     return fail('infrastructure', 'baseline', i.baseline.inconclusive[0]);
   }
-  const withoutVerify = baselineOpen(i.baseline, { verified: false });
+  const withoutVerify = baselineClasses(i.baseline, { verified: false });
+  const noteAll = (classes) => { for (const c of ORDER) notes.push(...(classes[c] ?? []).map((m) => `${LABEL[c]}: ${m}`)); };
   if (fork) {
-    if (withoutVerify.length) { notes.push(...withoutVerify); return fail('open_failure', null, `fork PR, generation skipped; ${withoutVerify[0]}`); }
-    return ok('skip', `skipped by policy (${i.scope.reason}); the baseline found no failing test on head`);
+    const first = firstOpen(withoutVerify);
+    noteAll(withoutVerify);
+    if (first) return fail(first, null, `fork PR, generation skipped; ${withoutVerify[first][0]}`);
+    return ok('skip', `skipped by policy (${i.scope.reason}); the baseline found no failing test or threshold miss on head`);
   }
 
   if (!i.gen) return fail('infrastructure', 'generate', `generate job ${i.genJob ?? 'did not run'} and wrote no gen.json`);
@@ -81,9 +90,10 @@ export function computeVerdict(i) {
   if (i.gen.status === 'agent-error') return fail('infrastructure', 'generate', `agent run failed (${i.gen.detail ?? 'unknown'})`);
   if (i.gen.status === 'guard-fail') return fail('guard', 'generate', (i.gen.violations ?? []).slice(0, 3).join('; '));
   if (i.gen.status === 'no-op') {
-    notes.push(...withoutVerify);
-    if ((i.gen.probable_bugs ?? []).length) return fail('probable_bug', null, `${i.gen.probable_bugs[0]} (no test files written)`);
-    if (withoutVerify.length) return fail('open_failure', null, `agent wrote no tests; ${withoutVerify[0]}`);
+    const classes = { ...withoutVerify, probable_bug: (i.gen.probable_bugs ?? []).map((b) => `${b} (no test files written)`) };
+    const first = firstOpen(classes);
+    noteAll(classes);
+    if (first) return fail(first, null, `agent wrote no tests; ${classes[first][0]}`);
     return ok('agent-no-op', `agent decided no tests are needed (${i.gen.reason ?? 'no reason given'})`);
   }
   if (i.gen.status !== 'patch') return fail('infrastructure', 'generate', `unexpected generate status ${i.gen.status}`);
@@ -91,7 +101,7 @@ export function computeVerdict(i) {
   if (!i.verify) return fail('infrastructure', 'verify', `verify job ${i.verifyJob ?? 'did not run'} and wrote no verify.json`);
   const classes = { ...(i.verify.classes ?? {}) };
   // PR-induced failures are tracked by verify (pr_induced_status); the other baseline classes stay open.
-  classes.open_failure = [...(classes.open_failure ?? []), ...baselineOpen(i.baseline, { verified: true })];
+  classes.open_failure = [...(classes.open_failure ?? []), ...baselineClasses(i.baseline, { verified: true }).open_failure];
   const open = ORDER.filter((c) => (classes[c] ?? []).length);
   for (const c of open) notes.push(...classes[c].map((m) => `${LABEL[c]}: ${m}`));
 

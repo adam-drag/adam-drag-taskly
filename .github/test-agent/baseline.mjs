@@ -2,29 +2,32 @@
 // Keyless baseline for the PR test agent (plan 2.7). Node 22, no dependencies. Runs PR code: never give
 // it secrets.
 //
-//   node baseline.mjs --base <merge-base tree> --head <head tree> --scope <scope.json> --out <baseline.json>
-//                     --work <scratch dir> [--pr-induced-md <file>] [--install-failures <file>]
+//   node baseline.mjs --git <runner-owned checkout> --base-sha <merge base> --head-sha <head> --scope <scope.json>
+//                     --out <baseline.json> --work <scratch dir> [--pr-induced-md <file>] [--install]
+//                     [--sandbox-user <user> --sandbox-root <dir>]
+//
+// The merge base and head trees are written out from git into copies under the sandbox root, and npm ci,
+// prisma generate and vitest run there through sandbox.mjs (as --sandbox-user in the workflow), never as
+// this process. This script is loaded before any of them runs, and every PR process is killed after each
+// command and before baseline.json is written.
 //
 // It runs the existing suites of each affected package once on the merge base and once on the head (with
 // coverage, for the coverage delta), then the head's failing files 2 more times. Tests are matched by
 // "<repo path> > <full name>". Each failing test gets one class: pr_induced, pre_existing, flaky,
 // new_in_pr. A side that failed to install, crashed, timed out or wrote no valid report makes the whole
 // package inconclusive, and then no test in it is classified.
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import {
-  FEEDBACK_CAPS, PKG_OF, THRESHOLD_MSG, condenseFailure, coverageFor, indexResults, stripAnsi, totals, touchedSrc, vitest,
+  FEEDBACK_CAPS, PKG_OF, THRESHOLD_MSG, condenseFailure, coverageFor, indexResults, install, parseCliArgs, sandboxFromArgs, stripAnsi, totals, touchedSrc, vitest,
 } from '../../.claude/skills/verify-tests/scripts/verify.mjs';
+import { IsolationError, checkoutIndex } from '../../.claude/skills/verify-tests/scripts/sandbox.mjs';
 
 export const HEAD_RUNS = 3;
 const readJson = (p) => JSON.parse(readFileSync(p, 'utf8'));
 
-function parseArgs(argv) {
-  const a = {};
-  for (let i = 0; i < argv.length; i++) if (argv[i].startsWith('--')) a[argv[i].slice(2)] = argv[++i];
-  return a;
-}
 
 const reportsFailure = (json) => json.numFailedTests > 0 || json.testResults.some((t) => t.status !== 'passed');
 
@@ -86,37 +89,64 @@ export function prInducedMarkdown(list) {
 
 const side = (r, root) => ({ problem: runProblem(r), tests: indexResults(r?.json, root).tests });
 
+// A commit of the runner-owned checkout written out as plain files (no .git), through a throwaway index.
+function exportCommit(repo, sha, indexFile, target) {
+  const r = spawnSync('git', ['-C', repo, 'read-tree', sha], { encoding: 'utf8', env: { ...process.env, GIT_INDEX_FILE: indexFile } });
+  if (r.status !== 0) throw new Error(`git read-tree ${sha} failed: ${r.stderr}`);
+  rmSync(target, { recursive: true, force: true });
+  checkoutIndex(repo, indexFile, target);
+}
+
 export function baseline(args) {
   const scope = readJson(args.scope);
-  const base = resolve(args.base), head = resolve(args.head), work = resolve(args.work);
+  const repo = resolve(args.git), work = resolve(args.work);
   mkdirSync(work, { recursive: true });
-  const installFailures = args['install-failures'] && existsSync(args['install-failures'])
-    ? readFileSync(args['install-failures'], 'utf8').split('\n').map((l) => l.trim()).filter(Boolean) : [];
-  const out = { version: 2, packages: {}, pr_induced: [], pre_existing: [], flaky: [], new_in_pr: [], inconclusive: [], head_failing: [], threshold_miss: [], coverage_before: {} };
+  const out = { version: 2, packages: {}, pr_induced: [], pre_existing: [], flaky: [], new_in_pr: [], inconclusive: [], head_failing: [], threshold_miss: [], coverage_before: {}, isolation: null };
   const packages = scope.packages.filter((p) => p === 'backend' || p === 'frontend');
-  for (const pkg of packages) {
-    const installProblem = installFailures.filter((l) => l.startsWith(`${pkg} `)).join('; ') || null;
-    let b = null, h = [];
-    const covDir = join(work, `coverage-before-${pkg}`);
-    if (!installProblem) {
-      b = vitest(join(base, pkg), join(work, `baseline-${pkg}-base.json`), { log: join(work, `baseline-${pkg}-base.log`) });
-      h.push(vitest(join(head, pkg), join(work, `baseline-${pkg}-head-1.json`), { coverageDir: covDir, log: join(work, `baseline-${pkg}-head-1.log`) }));
-      const failingFiles = [...new Set(Object.entries(indexResults(h[0].json, head).files).filter(([, f]) => f.status !== 'passed').map(([p]) => p))];
-      for (let i = 2; i <= HEAD_RUNS && failingFiles.length && h[0].json; i++) {
-        h.push(vitest(join(head, pkg), join(work, `baseline-${pkg}-head-${i}.json`), { files: failingFiles.map((p) => p.slice(pkg.length + 1)), log: join(work, `baseline-${pkg}-head-${i}.log`) }));
+  const box = sandboxFromArgs(args, work);
+  out.isolation = { mode: box.mode, user: box.user, root: box.root };
+  const base = join(box.root, 'base'), head = join(box.root, 'head'), prOut = join(box.root, 'out');
+  let isolationFailure = null;
+  try {
+    exportCommit(repo, args['base-sha'], join(work, 'base.index'), join(work, 'stage-base'));
+    exportCommit(repo, args['head-sha'], join(work, 'head.index'), join(work, 'stage-head'));
+    box.stage(join(work, 'stage-base'), base);
+    box.stage(join(work, 'stage-head'), head);
+    box.mkdir(prOut);
+    const installFailures = args.install ? [...install(box, base, 'merge base', packages, work), ...install(box, head, 'head', packages, work)] : [];
+    for (const pkg of packages) {
+      const installProblem = installFailures.filter((l) => l.startsWith(`${pkg} `)).join('; ') || null;
+      let b = null; const h = [];
+      const covDir = join(prOut, `coverage-before-${pkg}`);
+      if (!installProblem) {
+        b = vitest(box, join(base, pkg), join(prOut, `baseline-${pkg}-base.json`), { log: join(work, `baseline-${pkg}-base.log`) });
+        h.push(vitest(box, join(head, pkg), join(prOut, `baseline-${pkg}-head-1.json`), { coverageDir: covDir, log: join(work, `baseline-${pkg}-head-1.log`) }));
+        const failingFiles = [...new Set(Object.entries(indexResults(h[0].json, head).files).filter(([, f]) => f.status !== 'passed').map(([p]) => p))];
+        for (let i = 2; i <= HEAD_RUNS && failingFiles.length && h[0].json; i++) {
+          h.push(vitest(box, join(head, pkg), join(prOut, `baseline-${pkg}-head-${i}.json`), { files: failingFiles.map((p) => p.slice(pkg.length + 1)), log: join(work, `baseline-${pkg}-head-${i}.log`) }));
+        }
       }
+      const c = classifyPackage({ pkg, base: b ? side(b, base) : null, head: h.map((r) => side(r, head)), installProblem });
+      for (const k of ['pr_induced', 'pre_existing', 'flaky', 'new_in_pr', 'head_failing']) out[k].push(...c[k]);
+      if (c.inconclusive) out.inconclusive.push(c.inconclusive);
+      // Head run 1 has coverage on: a threshold miss there is open on head without any agent test.
+      else if (runThresholdMiss(h[0])) out.threshold_miss.push(pkg);
+      out.packages[pkg] = {
+        base: b ? { exit: b.status, signal: b.signal, totals: totals(b.json), ms: b.ms } : null,
+        head: h.map((r) => ({ exit: r.status, signal: r.signal, totals: totals(r.json), ms: r.ms })),
+        inconclusive: c.inconclusive,
+      };
+      out.coverage_before[pkg] = c.inconclusive ? { error: 'baseline inconclusive' } : coverageFor(join(covDir, 'coverage-summary.json'), head, touchedSrc(scope).filter((p) => PKG_OF(p) === pkg), box);
     }
-    const c = classifyPackage({ pkg, base: b ? side(b, base) : null, head: h.map((r) => side(r, head)), installProblem });
-    for (const k of ['pr_induced', 'pre_existing', 'flaky', 'new_in_pr', 'head_failing']) out[k].push(...c[k]);
-    if (c.inconclusive) out.inconclusive.push(c.inconclusive);
-    // Head run 1 has coverage on: a threshold miss there is open on head without any agent test.
-    else if (runThresholdMiss(h[0])) out.threshold_miss.push(pkg);
-    out.packages[pkg] = {
-      base: b ? { exit: b.status, signal: b.signal, totals: totals(b.json), ms: b.ms } : null,
-      head: h.map((r) => ({ exit: r.status, signal: r.signal, totals: totals(r.json), ms: r.ms })),
-      inconclusive: c.inconclusive,
-    };
-    out.coverage_before[pkg] = c.inconclusive ? { error: 'baseline inconclusive' } : coverageFor(join(covDir, 'coverage-summary.json'), head, touchedSrc(scope).filter((p) => PKG_OF(p) === pkg));
+    box.reap();
+  } catch (e) {
+    if (!(e instanceof IsolationError)) throw e;
+    isolationFailure = e.message;
+  }
+  // An isolation failure makes the whole baseline inconclusive: nothing from that run is classified.
+  if (isolationFailure) {
+    out.inconclusive.push(`isolation failure: ${isolationFailure}`);
+    for (const k of ['pr_induced', 'pre_existing', 'flaky', 'new_in_pr', 'head_failing', 'threshold_miss']) out[k] = [];
   }
   writeFileSync(args.out, `${JSON.stringify(out, null, 2)}\n`);
   if (args['pr-induced-md']) writeFileSync(args['pr-induced-md'], prInducedMarkdown(out.pr_induced));
@@ -124,4 +154,4 @@ export function baseline(args) {
   return 0;
 }
 
-if (import.meta.url === pathToFileURL(process.argv[1] ?? '').href) process.exitCode = baseline(parseArgs(process.argv.slice(2)));
+if (import.meta.url === pathToFileURL(process.argv[1] ?? '').href) process.exitCode = baseline(parseCliArgs(process.argv.slice(2)));

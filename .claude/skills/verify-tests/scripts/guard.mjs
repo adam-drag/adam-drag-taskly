@@ -34,10 +34,68 @@ const BANNED = [
 ];
 const TEST_CASE = /\b(?:it|test)(?:\.(?:concurrent|sequential))?(?:\.each)?\s*[(`]/g;
 const EXPECT = /\bexpect(?:\.soft)?\s*\(/g;
-// Lines an undeclared edit may remove: blank lines, single-line import statements, the closing line of a
-// multi-line import, and lines of closing brackets only. A bare identifier line is not removable, because it
-// can be an it.each row or a shorthand property; a name removed inside a multi-line import is refused too.
-const REMOVABLE = /^\s*$|^\s*import\s+(?:type\s+)?(?:[\w$*{]|['"]).*$|^\s*\}\s*from\s+['"][^'"]+['"];?\s*$|^\s*[)}\]][)}\];,\s]*$/;
+// Lines an undeclared edit may remove from an existing test file (fnd_dc1a984a1018765a). Every other removed or
+// changed line, such as `age: 3,` inside a multi-line toEqual, needs a human_test_updates declaration.
+// - a blank line;
+// - a line of closing brackets only, or the first or last line of a multi-line import, when the same
+//   line (trimmed) is added back in the file: a diff that moves `});` below an appended test does that;
+// - a single-line import, when an added import line names the same module and keeps every imported name.
+// A bare identifier line is not removable, because it can be an it.each row or a shorthand property.
+const BLANK = /^\s*$/;
+const CLOSING = /^\s*[)}\]][)}\];,\s]*$|^\s*\}\s*from\s+['"][^'"]+['"];?\s*$|^\s*import\s+(?:type\s+)?\{\s*$/;
+const IMPORT_LINE = /^\s*import\s+(type\s+)?(.*?)\s+from\s+(['"])([^'"]+)\3;?\s*$/;
+const SIDE_EFFECT_IMPORT = /^\s*import\s+(['"])[^'"]+\1;?\s*$/;
+
+// Names bound by a single-line import clause, as "kind:text" tokens (default, namespace, named with alias).
+function importNames(clause) {
+  const names = new Set();
+  const braces = /\{([^}]*)\}/.exec(clause);
+  for (const n of (braces ? braces[1] : '').split(',').map((x) => x.trim().replace(/\s+/g, ' ')).filter(Boolean)) names.add(`named:${n}`);
+  const rest = clause.replace(/\{[^}]*\}/, '').split(',').map((x) => x.trim()).filter(Boolean);
+  for (const r of rest) names.add(r.startsWith('*') ? `ns:${r.replace(/\s+/g, ' ')}` : `default:${r}`);
+  return names;
+}
+
+// The removed lines that an undeclared edit may not make.
+export function undeclaredRemovals(removedLines, addedLines) {
+  const added = addedLines.map((l) => l.trim());
+  const addedImports = addedLines.map((l) => IMPORT_LINE.exec(l)).filter(Boolean);
+  const pool = [...added];
+  const bad = [];
+  for (const line of removedLines) {
+    if (BLANK.test(line)) continue;
+    if (CLOSING.test(line)) {
+      const i = pool.indexOf(line.trim());
+      if (i >= 0) { pool.splice(i, 1); continue; }
+      bad.push(line); continue;
+    }
+    if (SIDE_EFFECT_IMPORT.test(line)) { if (added.includes(line.trim())) continue; bad.push(line); continue; }
+    const m = IMPORT_LINE.exec(line);
+    if (m) {
+      const before = importNames(m[2]);
+      const kept = addedImports.some((a) => a[4] === m[4] && Boolean(a[1]) === Boolean(m[1]) && [...before].every((n) => importNames(a[2]).has(n)));
+      if (kept) continue;
+    }
+    bad.push(line);
+  }
+  return bad;
+}
+// The lines of an existing test file must stay in their order: the before file (without blank lines and
+// single-line imports, which undeclaredRemovals checks) must be a subsequence of the after file. Appending a
+// test keeps that, also when the diff shows `});` as removed and added again. Moving a closing bracket to
+// another place in a multi-line expectation does not. Returns the first before line that is not kept in
+// order, or null.
+export function firstLineOutOfOrder(before, after) {
+  const seq = (text) => text.split('\n').map((l) => l.trim()).filter((l) => l && !IMPORT_LINE.test(l) && !SIDE_EFFECT_IMPORT.test(l));
+  const b = seq(before), a = seq(after);
+  let j = 0;
+  for (const line of b) {
+    while (j < a.length && a[j] !== line) j++;
+    if (j === a.length) return line;
+    j++;
+  }
+  return null;
+}
 // An assertion on a line: expect(...) or a chained matcher such as .toBe( / .rejects.
 const ASSERTION = /\bexpect(?:\.soft)?\s*\(|\.(?:to[A-Z]\w*|rejects|resolves)\b/;
 // Matchers that accept almost any value. Replacing an existing assertion with one of them weakens it.
@@ -122,10 +180,13 @@ export function checkPatch(patchText, beforeRoot, afterRoot, { humanUpdates = []
       // for a legitimate edit plus a weak-matcher test in the same file; nothing is weakened by it.
       const assertionsRemoved = f.removedLines.some((l) => ASSERTION.test(l));
       if (assertionsRemoved && !declared.has(f.b)) violations.push(`${f.b}: assertion lines removed from an existing test file that is not in human_test_updates (no-weakening)`);
-      // Outside human_test_updates an existing test file may lose only blank lines, import lines and lines of
-      // closing brackets. Anything else (an it.each table row, a setup line) could drop a case unseen.
-      const otherRemoved = f.removedLines.filter((l) => !ASSERTION.test(l) && !REMOVABLE.test(l));
+      // Outside human_test_updates an existing test file may lose only blank lines, kept imports and closing
+      // brackets that come back (see undeclaredRemovals). Anything else (an it.each table row, a setup line,
+      // a changed value inside a multi-line expectation) could change or drop a case unseen.
+      const otherRemoved = undeclaredRemovals(f.removedLines.filter((l) => !ASSERTION.test(l)), f.addedLines);
       if (otherRemoved.length && !declared.has(f.b)) violations.push(`${f.b}: lines removed from an existing test file that is not in human_test_updates: ${otherRemoved[0].trim().slice(0, 120)}`);
+      const moved = otherRemoved.length ? null : firstLineOutOfOrder(before, after);
+      if (moved !== null && !declared.has(f.b)) violations.push(`${f.b}: lines moved in an existing test file that is not in human_test_updates: ${moved.slice(0, 120)}`);
       if (f.removed > 0 && f.addedLines.some((l) => WEAK_MATCHER.test(l))) violations.push(`${f.b}: no-weakening rule: this existing test file loses lines and gains a weak matcher (toBeDefined/toBeTruthy/toBeFalsy/toBeUndefined/expect.any/expect.anything); use an exact matcher, or a human pushes this change`);
       editedExisting.push(e);
     }

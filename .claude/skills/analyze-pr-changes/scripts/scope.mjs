@@ -29,6 +29,7 @@ const TRUSTED_REQUIRED = [
   '.claude/skills/verify-tests/SKILL.md',
   '.claude/skills/verify-tests/scripts/verify.mjs',
   '.claude/skills/verify-tests/scripts/guard.mjs',
+  '.claude/skills/verify-tests/scripts/sandbox.mjs',
 ];
 export const BOT_AUTHOR = 'github-actions[bot]';
 export const BOT_SUBJECT_PREFIX = 'test(agent):';
