@@ -12,7 +12,7 @@ Evidence is in [SOLUTION_DETAILS.md](SOLUTION_DETAILS.md). Main pieces: the [wor
 
 **Scripts from the base commit.** Every job runs scripts from the base SHA of the PR event, and the PR head is sanitized before the agent starts. Conformance check 3 showed that without the sanitize step a planted agent took effect, and with it none did.
 
-**Two attempts.** Attempt 2 runs when the guard passes and verify finds a failing or untyped test file, or an open PR-induced failure. It starts from the attempt-1 patch and reads the verify feedback. Only the final verified tree is published.
+**Two attempts.** Attempt 2 runs when the guard passes, verify finds no infrastructure problem, and it finds a failing or untyped test file or an open PR-induced failure. It starts from the attempt-1 patch and reads the verify feedback. Only the final verified tree is published.
 
 **The published tree is the verified tree.** Publish writes the tree that verify recorded, through the Git Data API. It refuses a different tree and updates the branch without force, so GitHub refuses a moved head.
 
@@ -67,7 +67,7 @@ Measured on `main` (`a20b82b`). The "before" values are from the first commit.
 | Backend | 33.02% | 97.24% | 33.33% | 95.83% | 48 to 93 |
 | Frontend | 47.68% | 93.37% | 43.79% | 89.05% | 18 to 98 |
 
-The agent wrote the coverage tests, except one frontend fixture. I reviewed every file, and a few needed hand edits. Five application issues were reported and none is fixed here ([details](SOLUTION_DETAILS.md#5-coverage-work-and-findings)).
+The agent wrote the coverage tests, except one frontend fixture. I reviewed every file. A few needed hand edits. Five application issues were reported and none is fixed here ([details](SOLUTION_DETAILS.md#5-coverage-work-and-findings)).
 
 ## Limitations
 
@@ -76,7 +76,7 @@ The most important limits come first ([all limits](SOLUTION_DETAILS.md#9-limitat
 1. **A same-repo author can edit the workflow in the PR.** Under `pull_request` the workflow runs from the PR merge ref, so a malicious collaborator can change it. The job split covers injected or generated code only. A ruleset on `.github` closes this, and only the repository owner can set it ([threat model](SOLUTION_DETAILS.md#6-threat-model)).
 2. **The verifier does not prove honest test tooling.** Vitest and its config come from the PR, so a PR can forge a clean report and a green status.
 3. **Attempt 2 has no live run.** Two tries did not trigger it. Node tests cover the scripts, and nothing tests the attempt choice in the workflow.
-4. **The guard refuses some legitimate edits.** It refuses an undeclared update of a test that the agent wrote earlier in the same PR, and an undeclared growth of a single-line import. Both stopped live runs with nothing published. The weakening check is a heuristic and can miss a loosened matcher.
+4. **The guard refuses some legitimate edits.** It refuses an undeclared update of a test that the agent wrote earlier in the same PR, and an undeclared growth of a single-line import. Both stopped live runs. The weakening check is a heuristic and can miss a loosened matcher.
 5. **Bot commits get no executed CI.** Commits pushed with `GITHUB_TOKEN` start no normal runs, so the `test-agent/verified` status holds the result.
 
 ## Assumptions
