@@ -10,5 +10,8 @@ export function createHealthRouter(database: Database) {
   router.get('/health/echo/:word', (req, res) => {
     res.json({ word: req.params.word });
   });
+  router.get('/health/upper/:word', (req, res) => {
+    res.json({ word: req.params.word.toUpperCase() });
+  });
   return router;
 }
