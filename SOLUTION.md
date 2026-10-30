@@ -6,17 +6,15 @@ Evidence and implementation details are in [SOLUTION_DETAILS.md](SOLUTION_DETAIL
 
 ## Design
 
-**GitHub Actions with a pinned Claude Code CLI.** A lockfile fixes the CLI version (2.1.304). I tested gh-aw v1.0.1 in a time-boxed spike. In that setup the agent's push call failed with "No such tool available", because the setup publishes through gh-aw's own MCP tools. Making it work meant adding MCP tools and Bash to the agent file, which also wrote the coverage tests, so I did not adopt it. I did not test other gh-aw setups ([details](SOLUTION_DETAILS.md#7-gh-aw-comparison)).
+**GitHub Actions with a pinned Claude Code CLI.** I tested gh-aw v1.0.1 in a time-boxed spike. In that setup the agent's push call failed with "No such tool available", because the setup publishes through gh-aw's own MCP tools. Making it work meant adding MCP tools and Bash to the agent file, which also wrote the coverage tests, so I did not adopt it. I did not test other gh-aw setups ([details](SOLUTION_DETAILS.md#7-gh-aw-comparison)).
 
 **Separate jobs.** Only the generate jobs hold the API key, and they run no PR code. The baseline and verify jobs run PR code as an unprivileged user, with no secret and a read-only token. Publish holds the write token and checks out no PR code ([details](SOLUTION_DETAILS.md#1-design-decisions)).
 
 **Scripts from the base commit.** Every job runs scripts from the base SHA of the PR event, and the PR head is sanitized before the agent starts.
 
-**Baseline first.** Existing suites run on the merge base and the PR head, and only failures that the PR caused go to the agent.
-
 **The published tree is the verified tree.** Verify records the SHA of the candidate tree. Publish writes that tree through the Git Data API, refuses a different tree, and updates the branch without force, so GitHub refuses the write when the head moved after verification.
 
-**Roles of the agent and the scripts.** The agent decides whether behaviour changed, what to test, and whether a failing test is wrong or the code has a probable bug. Scripts handle scope, paths, test runs, coverage, publishing and the report numbers.
+**Roles of the agent and the scripts.** The agent decides whether behaviour changed, what to test, and whether a failing test is wrong or the code has a probable bug. Scripts run the baseline, so only failures that the PR caused go to the agent. They also handle scope, paths, test runs, coverage and publishing.
 
 ## How to run
 
@@ -24,7 +22,10 @@ Prerequisites: a GitHub repository with Actions enabled and a read-only default 
 
 ```bash
 gh secret set ANTHROPIC_API_KEY
-git switch -c my-change   # change a file under backend/src or frontend/src, add no tests
+git switch -c my-change
+# edit one file under backend/src or frontend/src and add no tests
+git add <the edited file>
+git commit -m "my change"
 git push -u origin my-change
 gh pr create --base main --draft --title "my change" --body "test"
 gh pr checks
@@ -32,11 +33,11 @@ gh pr checks
 
 Read the PR comment headed `## Test agent report`. The bot commit with the test files carries the status `test-agent/verified`.
 
-The local checks need no key, only Node 22.12 or later in the 22 line, or Node 24. The commands are in [details](SOLUTION_DETAILS.md#2-how-to-run).
+The local checks need no key. Their commands and the Node range are in [details](SOLUTION_DETAILS.md#2-how-to-run).
 
 ## Agent and skills
 
-The agent file is `.claude/agents/test-writer.md`. The four skills in `.claude/skills/` are `analyze-pr-changes`, `backend-unit-tests`, `frontend-unit-tests` and `verify-tests`. ([details](SOLUTION_DETAILS.md#3-the-agent-and-the-skills)).
+The agent is `.claude/agents/test-writer.md`. Its four skills in `.claude/skills/` are `analyze-pr-changes`, `backend-unit-tests`, `frontend-unit-tests` and `verify-tests`. The coverage tests came from the agent at `8a7393ddaa8e490fab67702cf751cc056536c7b2`. Since then the agent file is unchanged, and the guard, scope and verify scripts were hardened ([diff table](SOLUTION_DETAILS.md#3-the-agent-and-the-skills)).
 
 **Instructed.** The agent file tells the agent to call `analyze-pr-changes` first, the package skill before it writes tests, and `verify-tests` before it returns. It also tells the agent to write test files only and to keep every assertion. No script enforces the call order. The report warns when an attempt wrote tests without a stack skill call.
 
@@ -53,7 +54,7 @@ The agent file is `.claude/agents/test-writer.md`. The four skills in `.claude/s
 - Guard OK. Verify: type checks pass, backend 101/101, frontend 104/104.
 - Publish: bot commit [`521193d`](https://github.com/adam-drag/adam-drag-taskly/commit/521193d510fc96a49da2f70bf9c09daa327a7de9), status success. Its tree equals the verified tree.
 
-Its own CI is red before the agent commit, as expected. Other demo PRs cover no-ops, a probable bug, a failed generation and a prompt injection (the agent followed none of the injected instructions) ([details](SOLUTION_DETAILS.md#4-example-run-and-scenarios)).
+Other demo PRs cover no-ops, a probable bug, a failed generation and a prompt injection (the agent followed none of the injected instructions) ([details](SOLUTION_DETAILS.md#4-example-run-and-scenarios)).
 
 ## Coverage
 
@@ -68,11 +69,11 @@ The agent wrote the coverage tests, except one frontend fixture that a human wro
 
 ## Limitations
 
-The material ones, most important first ([all limits](SOLUTION_DETAILS.md#9-limitations)).
+Most important first ([all limits](SOLUTION_DETAILS.md#9-limitations)).
 
 1. **A same-repo author can edit the workflow in the PR.** Under `pull_request` the workflow runs from the PR merge ref, so a malicious collaborator can change the workflow that checks the PR. The job split covers injected or generated code only. A ruleset on `.github` closes this, and only the repository owner can set it ([threat model](SOLUTION_DETAILS.md#6-threat-model)).
 2. **The verifier does not prove honest test tooling.** Vitest and its config come from the PR, so a PR can forge a clean test report. A green status is no proof against the PR author.
-3. **Attempt 2 has no live run.** Two tries did not trigger it. Node tests cover the loop.
+3. **Attempt 2 has no live run.** Two tries did not trigger it. Node tests cover the scripts. Nothing tests the choice of attempt in the workflow.
 4. **The guard refuses some legitimate edits.** It refuses an undeclared update of a test that the agent wrote earlier in the same PR, and an undeclared growth of a single-line import. Both stopped live runs with nothing published.
 5. **The weakening check is a heuristic.** It can miss a loosened matcher. The report lists every edited human test.
 6. **There is no live fork run.** I have no second account, so unit tests cover the fork gate.
@@ -81,12 +82,11 @@ The material ones, most important first ([all limits](SOLUTION_DETAILS.md#9-limi
 ## Assumptions
 
 - The application is small enough for the diff caps (20 source files, 800 changed source lines).
-- PR authors are same-repo collaborators.
 - I did not verify whether the Anthropic Console can set a spend limit on the key ([details](SOLUTION_DETAILS.md#8-assumptions)).
 
 ## Production priorities
 
-1. **Protect `.github` and `.claude` with a ruleset.** The owner sets it, and it closes limitation 1.
-2. **Limit the key and the runner.** Use a dedicated key with a spend limit, and restrict egress (for example with `harden-runner`). This limits spend and the hosts the runner can reach.
+1. **Protect `.github` and `.claude` with a ruleset.** Only the owner can set it. It closes limitation 1.
+2. **Limit the key and the runner.** A dedicated key with a spend limit caps the cost. An egress restriction (for example `harden-runner`) limits which hosts the runner can reach.
 3. **Fix the two guard refusals and run attempt 2 live.** Both refusals blocked live runs.
 4. **Add an evaluation set of golden PRs.** It measures the agent's decisions over time ([details](SOLUTION_DETAILS.md#10-changes-for-a-production-version)).
