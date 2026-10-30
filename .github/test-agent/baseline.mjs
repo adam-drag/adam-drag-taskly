@@ -29,7 +29,10 @@ export const HEAD_RUNS = 3;
 const readJson = (p) => JSON.parse(readFileSync(p, 'utf8'));
 
 
-const reportsFailure = (json) => json.numFailedTests > 0 || json.testResults.some((t) => t.status !== 'passed');
+const reportsFailure = (json) => json.numFailedTests > 0 || json.testResults.some((t) => !t || t.status !== 'passed');
+// A failed test file in the report, as indexResults reads it (an entry with a file name that did not pass).
+// The root only shapes the keys, so any root works for this check.
+const namesFailure = (json) => Object.values(indexResults(json, '/').files).some((f) => f.status !== 'passed');
 
 // A coverage-threshold miss: vitest exits non-zero, every test passes, and its output names a threshold.
 export function runThresholdMiss(r) {
@@ -37,13 +40,16 @@ export function runThresholdMiss(r) {
     && THRESHOLD_MSG.test(stripAnsi(`${r.stdout ?? ''}\n${r.stderr ?? ''}`)));
 }
 
-// A run is valid when the command was not killed, wrote a JSON report with test results, and a non-zero
-// exit is explained by a failing test or a coverage-threshold miss.
+// A run is valid when the command was not killed, wrote a JSON report with test results, a failure that the
+// report counts is a named failed test file, and a non-zero exit is explained by a failing test or a
+// coverage-threshold miss. The report is untrusted: a count or a null entry with no failed file behind it is
+// not believed.
 export function runProblem(r) {
   if (!r) return 'did not run';
   if (r.signal) return `killed (${r.signal})`;
   if (!r.json) return `wrote no JSON report (exit ${r.status})`;
   if (!Array.isArray(r.json.testResults)) return 'JSON report has no testResults';
+  if (reportsFailure(r.json) && !namesFailure(r.json)) return `JSON report counts a failure but names no failed test file (exit ${r.status})`;
   if (r.status !== 0 && !reportsFailure(r.json) && !runThresholdMiss(r)) return `exited ${r.status} with every test passing and no coverage-threshold message`;
   return null;
 }

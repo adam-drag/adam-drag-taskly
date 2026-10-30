@@ -17,7 +17,8 @@
 // The baseline (existing suites on head and merge base) lives in .github/test-agent/baseline.mjs.
 // Pass/fail comes from the vitest JSON reporter, coverage from coverage-summary.json. A non-zero coverage run
 // with every test passing is a threshold miss only when vitest names a coverage threshold; otherwise it is
-// inconclusive (infrastructure). All runs use TZ=UTC. verify.json binds the result to the candidate tree:
+// inconclusive (infrastructure). A report that counts a failure but names no failed test file is infrastructure
+// too, whatever the exit code. All runs use TZ=UTC. verify.json binds the result to the candidate tree:
 // the tested head SHA, each candidate file's git blob id and the candidate tree id.
 import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
@@ -113,7 +114,8 @@ export function indexResults(json, root) {
     // tests) gets one synthetic entry, so the per-test view never loses a failed file.
     if (tr.status !== 'passed' && !assertions.some((a) => a.status === 'failed')) tests[`${file} > (file failed to run)`] = { status: 'failed', failure: stripAnsi(tr.message || '').split(`${root}/`).join('') };
     for (const a of assertions) {
-      tests[`${file} > ${a.fullName}`] = { status: a.status, failure: stripAnsi((a.failureMessages ?? []).join('\n')).split(`${root}/`).join('') };
+      const messages = Array.isArray(a.failureMessages) ? a.failureMessages.map(String) : [];
+      tests[`${file} > ${a.fullName}`] = { status: a.status, failure: stripAnsi(messages.join('\n')).split(`${root}/`).join('') };
     }
   }
   return { tests, files };
@@ -278,6 +280,10 @@ export function verify(args, opts = {}) {
       if (full.json && full.status !== 0 && allPassed) {
         if (THRESHOLD_MSG.test(stripAnsi(`${full.stdout}\n${full.stderr}`))) thresholdMiss = true;
         else infra.push(`${pkg}: vitest exited ${full.status} with every test passing and no coverage-threshold message`);
+      } else if (full.json && !full.signal && !allPassed && failedFiles.length === 0) {
+        // The report counts a failure (numFailedTests is not 0) but names no failed file. The report is
+        // untrusted, so a count with no file behind it is not believed, whatever the exit code.
+        infra.push(`${pkg}: the full suite report counts a failure but names no failed test file (exit ${full.status})`);
       }
       const changed = candidate.map((c) => c.path).filter((p) => PKG_OF(p) === pkg && isRunnableTest(p));
       const reps = [];
@@ -287,6 +293,7 @@ export function verify(args, opts = {}) {
         if (!r.json) infra.push(`${pkg}: rerun ${i} wrote no JSON report (exit ${r.status})`);
         else if (r.signal) infra.push(`${pkg}: rerun ${i} was killed (${r.signal})`);
         else if (r.status !== 0 && changed.every((p) => ri.files[p]?.status === 'passed')) infra.push(`${pkg}: rerun ${i} exited ${r.status} with every candidate file passing`);
+        else if ((r.status !== 0 || r.json.numFailedTests !== 0) && !Object.values(ri.files).some((f) => f.status !== 'passed')) infra.push(`${pkg}: rerun ${i} report counts a failure but names no failed test file (exit ${r.status})`);
         reps.push(ri);
       }
       out.packages[pkg] = {
@@ -325,8 +332,8 @@ export function verify(args, opts = {}) {
           if (st) { ran++; if (st !== 'passed') failed++; }
         }
         box.remove(dst);
-        // A probable-bug path that exists at head gets its head bytes back, so the tree check sees the
-        // recorded tree.
+        // A probable-bug path that is in the recorded tree gets its recorded bytes back, so the tree check
+        // sees the recorded tree.
         if (recorded[p.path]) box.writeFile(dst, readFileSync(join(staging, p.path)));
         entry.runs = ran; entry.failed_runs = failed;
       }
