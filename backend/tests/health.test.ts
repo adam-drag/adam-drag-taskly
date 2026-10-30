@@ -24,6 +24,17 @@ it('responds to the ping route without touching the database', async () => {
   expect(findFirst).not.toHaveBeenCalled();
 });
 
+it('responds to the version route without touching the database', async () => {
+  const { app, database } = setup();
+  const findFirst = vi.spyOn(database.todo, 'findFirst');
+
+  const response = await request(app).get('/api/health/version');
+
+  expect(response.status).toBe(200);
+  expect(response.body).toEqual({ version: 1 });
+  expect(findFirst).not.toHaveBeenCalled();
+});
+
 it('keeps the health route checking the database', async () => {
   const { app, database } = setup();
   const findFirst = vi.spyOn(database.todo, 'findFirst').mockResolvedValue(null);
