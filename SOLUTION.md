@@ -91,7 +91,7 @@ Prerequisites:
 5. Read the commit status `test-agent/verified` on the bot commit, for example `gh api repos/<owner>/<repo>/commits/<bot-sha>/status`.
 6. For a run that published, `git pull` the branch to get the bot commit with the test files.
 
-**Run the checks on your machine.** No key is needed. The commands run from a clone of `main` with Node 22.12 or later in the 22 line, or Node 24 or later. Both packages require at least 22.12, and the locked Prisma CLI (7.10.0) supports `^20.19 || ^22.12 || >=24.0`, so Node 23 does not work.
+**Run the checks on your machine.** No key is needed. The commands run from a clone of `main` with Node 22.12 or later in the 22 line, or Node 24 or later. Both packages require at least 22.12, and the locked Prisma CLI (7.10.0) supports `^20.19 || ^22.12 || >=24.0`, so Node 23 is outside its declared range and was not tested.
 
 ```bash
 # Backend: install, generate the Prisma client, type check, tests with coverage
@@ -306,8 +306,8 @@ The checks below ran against `main` HEAD `a20b82b82ee580c3f67186e0bdf939a3ff9ade
 | 4. A justified no-op | The docs-only and test-only PRs (deterministic, no LLM cost line), the agent no-op with its reason, and the superseded re-run. |
 | 5. Fork behaviour | Unit tests and the description above. No live fork run. |
 | 6. Failure and agent-failure reporting | The probable-bug PR (verified tests published, reproduction kept off the branch, status failure) and the generation-failure PR (stage and reason, red check). |
-| 7. Reproducible prerequisites and commands | A fresh worktree of `main` (`a20b82b`) followed the local commands of section 2 with Node 24.7.0: both type checks passed, the backend ran 93 tests (9 files, lines 97.24%, branches 95.83%), the frontend ran 98 tests (23 files, lines 93.37%, branches 89.05%), and `node --test` ran 80 tests with 0 failures. The GitHub steps of section 2 are the steps of the scenario runs in this section. |
-| 8. This file has real evidence | On 2026-10-30 every URL in this file (86) returned HTTP 200 with `curl`, every comment link resolved with `gh api`, and every relative link points to an existing file. Section 5 holds the coverage numbers measured on `main` HEAD. |
+| 7. Reproducible prerequisites and commands | A fresh worktree of `main` (`a20b82b`) followed the local commands of section 2 with Node 24.7.0: both type checks passed, the backend ran 93 tests (9 files, lines 97.24%, branches 95.83%), the frontend ran 98 tests (23 files, lines 93.37%, branches 89.05%), and `node --test` ran 80 tests with 0 failures. The GitHub steps of section 2 are the steps of the scenario runs in this section. The full output is in [this PR comment](https://github.com/adam-drag/adam-drag-taskly/pull/31#issuecomment-6514522528). |
+| 8. This file has real evidence | On 2026-10-30 every URL in this file returned HTTP 200 (86 URLs at the time of the check; the record link below was added afterwards and also returns 200) with `curl`, every comment link resolved with `gh api`, and every relative link points to an existing file (record: the same [PR comment](https://github.com/adam-drag/adam-drag-taskly/pull/31#issuecomment-6514522528)). Section 5 holds the coverage numbers measured on `main` HEAD. |
 | 9. Hygiene | `git log -p` on `main` has no attribution trailer line, no signature line, no robot emoji, no key pattern and none of the assignment text. One commit subject says that the coverage tests were generated with the test agent. It is a description and not a signature. The key patterns that match are the secret scanner's own regular expressions and one environment assignment that passes the secret by name. Demo PRs are closed and labelled. |
 | 10. Status accuracy and bot-commit runs | The table "Runs for bot commits" lists every bot commit with its status and its runs. |
 
@@ -315,7 +315,7 @@ The checks below ran against `main` HEAD `a20b82b82ee580c3f67186e0bdf939a3ff9ade
 
 The coverage PRs used the agent and skills locally, in batches by gap area, on `AGENT_SHA`. Every batch went through `guard.mjs` and `verify.mjs` (tsc, full suite, each changed file three times) with `TZ=UTC`. The agent wrote every test file, and a human reviewed every file. Only test files changed. No application code changed.
 
-The numbers below were measured again on `main` HEAD `a20b82b` in a clean worktree: `TZ=UTC npm run test:coverage -- --maxWorkers=4` in each package (backend with Node 22, 93 tests in 9 files; frontend with 98 tests in 23 files). The "before" numbers come from the first commit of the repository (`cd11357`).
+The numbers below were measured again on `main` HEAD `a20b82b` in a clean worktree: `TZ=UTC npm run test:coverage -- --maxWorkers=4` in each package (backend 93 tests in 9 files; frontend 98 tests in 23 files). The fresh-worktree run of the section 2 commands (Node 24.7.0, check 7 below) printed the same numbers. The "before" numbers come from the first commit of the repository (`cd11357`).
 
 | Package | PR | Lines before | Lines after | Branches before | Branches after | Statements after | Functions after | Tests before | Tests after |
 |---|---|---|---|---|---|---|---|---|---|
