@@ -29,3 +29,13 @@ it('answers 500 when the database query fails', async () => {
   expect(response.body).toEqual({ detail: 'Internal Server Error' });
   expect(log).toHaveBeenCalledWith(failure);
 });
+
+it('answers the health check on repeated calls', async () => {
+  vi.spyOn(database.todo, 'findFirst').mockResolvedValue(record);
+  const app = express();
+  app.use('/api', createHealthRouter(database));
+  await request(app).get('/api/health');
+  const response = await request(app).get('/api/health');
+  expect(response.status).toBe(200);
+  expect(response.body).toEqual({ status: 'ok' });
+});
