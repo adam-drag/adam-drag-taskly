@@ -29,7 +29,7 @@ Every statement in this file names its source where one exists: a file in this r
 
 **GitHub Actions with the Claude Code CLI, pinned.** The workflow is `.github/workflows/pr-test-agent.yml`. The CLI version is fixed in `.github/test-agent/package.json` and its lockfile (2.1.304) and is installed with `npm ci --ignore-scripts`. Two alternatives were considered. gh-aw gives a firewall, base restore and safe outputs, but its pushes do not trigger CI, so it went through a time-boxed spike. The `claude-code-action` has no agent input and restores the agent configuration from the tip of the base branch. This solution restores it from the base SHA of the event. Section 7 reports the gh-aw spike.
 
-**Separate jobs, one purpose each.** No job holds both PR code and a secret or a write token.
+**Separate jobs, one purpose each.** No job that holds a secret or a write token runs PR code. The generate jobs check out the PR head as data for the agent to read, and they run none of it.
 
 | Job | Runs PR code | Secret | Token | Timeout |
 |---|---|---|---|---|
