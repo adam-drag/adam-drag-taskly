@@ -94,7 +94,7 @@ export function createSandbox({ user = null, root, lang = 'C.UTF-8', listPids = 
 
     // Copies a runner-owned directory into a new directory the sandbox user owns.
     stage(from, to) {
-      if (!user) { cpSync(from, to, { recursive: true, verbatimSymlinks: true }); return; }
+      if (!user) { rmSync(to, { recursive: true, force: true }); cpSync(from, to, { recursive: true, verbatimSymlinks: true }); return; }
       box.mkdir(to);
       const pack = spawnSync('tar', ['-C', from, '-cf', '-', '.'], { maxBuffer: 2 * 1024 * 1024 * 1024 });
       if (pack.status !== 0) throw new IsolationError(`tar of ${from} failed`);
