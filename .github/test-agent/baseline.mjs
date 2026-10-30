@@ -21,18 +21,13 @@ import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import {
-  FEEDBACK_CAPS, PKG_OF, THRESHOLD_MSG, condenseFailure, coverageFor, indexResults, install, sandboxFromArgs, stripAnsi, totals, touchedSrc, vitest,
+  FEEDBACK_CAPS, PKG_OF, THRESHOLD_MSG, condenseFailure, coverageFor, indexResults, install, parseCliArgs, sandboxFromArgs, stripAnsi, totals, touchedSrc, vitest,
 } from '../../.claude/skills/verify-tests/scripts/verify.mjs';
 import { IsolationError, checkoutIndex } from '../../.claude/skills/verify-tests/scripts/sandbox.mjs';
 
 export const HEAD_RUNS = 3;
 const readJson = (p) => JSON.parse(readFileSync(p, 'utf8'));
 
-function parseArgs(argv) {
-  const a = {};
-  for (let i = 0; i < argv.length; i++) if (argv[i].startsWith('--')) a[argv[i].slice(2)] = argv[++i];
-  return a;
-}
 
 const reportsFailure = (json) => json.numFailedTests > 0 || json.testResults.some((t) => t.status !== 'passed');
 
@@ -159,4 +154,4 @@ export function baseline(args) {
   return 0;
 }
 
-if (import.meta.url === pathToFileURL(process.argv[1] ?? '').href) process.exitCode = baseline(parseArgs(process.argv.slice(2)));
+if (import.meta.url === pathToFileURL(process.argv[1] ?? '').href) process.exitCode = baseline(parseCliArgs(process.argv.slice(2)));

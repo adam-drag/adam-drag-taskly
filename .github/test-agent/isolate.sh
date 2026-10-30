@@ -45,6 +45,8 @@ setup() {
   local node_bin node_home d
   node_bin=$(readlink -f "$(command -v node)")
   node_home=$(dirname "$(dirname "$node_bin")")
+  # Only a node from the runner tool cache (setup-node) is changed; a system node (/usr) is refused.
+  case "$node_home" in "${RUNNER_TOOL_CACHE:-/opt/hostedtoolcache}"/*) ;; *) fail "node $node_bin is not in the runner tool cache" ;; esac
   sudo -n chmod -R go-w "$node_home"
   d=$node_home
   while [ "$d" != "/" ]; do sudo -n chmod go-w "$d"; d=$(dirname "$d"); done

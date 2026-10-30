@@ -8,7 +8,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { main as scopeMain } from '../../../.claude/skills/analyze-pr-changes/scripts/scope.mjs';
-import { indexResults, verify } from '../../../.claude/skills/verify-tests/scripts/verify.mjs';
+import { indexResults, parseCliArgs, sandboxFromArgs, verify } from '../../../.claude/skills/verify-tests/scripts/verify.mjs';
 import { IsolationError, createSandbox } from '../../../.claude/skills/verify-tests/scripts/sandbox.mjs';
 import { fetchBotStatus, render } from '../report.mjs';
 
@@ -183,11 +183,11 @@ for (const f of fs.readdirSync(src)) { fs.copyFileSync(path.join(src, f), path.j
 
 // A bin directory with npm, npx and the fake tools. npmExtra is appended to the fake npm (PR code that runs
 // at install time).
-function fakeBin(root, npmExtra = '') {
+function fakeBin(root, npmExtra = '', npx = '#!/bin/sh\nexit 0\n') {
   const bin = join(root, 'bin');
   mkdirSync(join(bin, 'fake-bins'), { recursive: true });
   writeFileSync(join(bin, 'npm'), FAKE_NPM + npmExtra);
-  writeFileSync(join(bin, 'npx'), '#!/bin/sh\nexit 0\n');
+  writeFileSync(join(bin, 'npx'), npx);
   writeFileSync(join(bin, 'fake-bins/vitest'), FAKE_VITEST);
   writeFileSync(join(bin, 'fake-bins/tsc'), FAKE_TSC);
   for (const f of ['npm', 'npx', 'fake-bins/vitest', 'fake-bins/tsc']) chmodSync(join(bin, f), 0o755);
@@ -204,7 +204,7 @@ function withPath(bin, fn) {
 
 // opts.npmExtra: PR code run by npm ci. opts.subprocess: run verify.mjs from a copy of the trusted scripts in
 // a child process (returns the copy's path as v.trusted). opts.sandbox: a sandbox to use instead.
-function verifyFixture(fake, { existing = [], fixture = false, baseline = null, npmExtra = '', subprocess = false, sandbox = null } = {}) {
+function verifyFixture(fake, { existing = [], fixture = false, baseline = null, npmExtra = '', npx, subprocess = false, sandbox = null } = {}) {
   const root = mkdtempSync(join(tmpdir(), 'verify-'));
   const dir = join(root, 'work'), files = join(root, 'files'), work = join(root, 'scratch');
   mkdirSync(join(dir, 'backend/tests'), { recursive: true });
@@ -215,7 +215,7 @@ function verifyFixture(fake, { existing = [], fixture = false, baseline = null, 
   for (const f of existing) writeFileSync(join(dir, 'backend', f), "it('t', () => {});\n");
   git(dir, 'add', 'backend/package.json', 'backend/fake.json', ...existing.map((f) => `backend/${f}`));
   commit(dir, 'Adam', 'base');
-  const bin = fakeBin(root, npmExtra);
+  const bin = fakeBin(root, npmExtra, npx);
   const good = 'backend/tests/x.test.ts', pb = 'backend/tests/x.probable-bug.test.ts';
   mkdirSync(join(files, 'backend/tests'), { recursive: true });
   writeFileSync(join(files, good), "it('a', () => {});\n");
@@ -229,12 +229,12 @@ function verifyFixture(fake, { existing = [], fixture = false, baseline = null, 
   writeFileSync(join(root, 'scope.json'), JSON.stringify({ packages: ['backend'], files: [] }));
   writeFileSync(join(root, 'guard.json'), JSON.stringify({ ok: true, violations: [] }));
   writeFileSync(join(root, 'result.json'), JSON.stringify({ probable_bugs: [{ title: 'wrong comparison', test_file: pb }] }));
-  const args = { dir, files, work, install: '1', patch: join(root, 'patch.diff'), scope: join(root, 'scope.json'), guard: join(root, 'guard.json'), result: join(root, 'result.json'), attempt: '1', out: join(root, 'verify.json'), feedback: join(root, 'feedback.md') };
+  const args = { dir, files, work, install: true, patch: join(root, 'patch.diff'), scope: join(root, 'scope.json'), guard: join(root, 'guard.json'), result: join(root, 'result.json'), attempt: '1', out: join(root, 'verify.json'), feedback: join(root, 'feedback.md') };
   if (baseline) { writeFileSync(join(root, 'baseline.json'), JSON.stringify(baseline)); args.baseline = join(root, 'baseline.json'); }
   const trusted = join(root, 'trusted');
   if (subprocess) {
     cpSync(join(import.meta.dirname, '../../../.claude/skills/verify-tests/scripts'), trusted, { recursive: true });
-    const argv = Object.entries(args).flatMap(([k, val]) => [`--${k}`, val]);
+    const argv = Object.entries(args).flatMap(([k, val]) => (val === true ? [`--${k}`] : [`--${k}`, val]));
     const r = spawnSync(process.execPath, [join(trusted, 'verify.mjs'), 'verify', ...argv], { encoding: 'utf8', env: { ...process.env, PATH: `${bin}:${process.env.PATH}` } });
     if (r.status !== 0) throw new Error(`verify.mjs exited ${r.status}: ${r.stderr}`);
   } else {
@@ -314,6 +314,19 @@ test('indexResults keeps a failed file without a failed assertion as one failed 
   assert.equal(tests['backend/tests/a.test.ts > t'].status, 'passed');
 });
 
+test('indexResults skips null and non-object assertion entries in an untrusted report', () => {
+  const json = { testResults: [null, { name: '/r/backend/tests/a.test.ts', status: 'passed', assertionResults: [null, 3, { fullName: 't', status: 'passed' }] }] };
+  const { tests, files } = indexResults(json, '/r');
+  assert.equal(files['backend/tests/a.test.ts'].tests, 1);
+  assert.deepEqual(Object.keys(tests), ['backend/tests/a.test.ts > t']);
+});
+
+test('verify: a probable-bug path that exists at head gets its head bytes back, so the tree check passes', () => {
+  const v = verifyFixture({}, { existing: ['tests/x.probable-bug.test.ts'] });
+  assert.equal(v.isolation.tree_check, 'unchanged');
+  assert.ok(!v.classes.infrastructure.some((m) => m.includes('tree changed')), v.classes.infrastructure.join('; '));
+});
+
 test('scope scans src directories named like build output, but not package build output', () => {
   const root = mkdtempSync(join(tmpdir(), 'scope-walk-'));
   const base = join(root, 'base'), head = join(root, 'head');
@@ -385,4 +398,41 @@ test('isolation: a PR process that cannot be killed fails closed, and the result
   const v = verifyFixture({}, { sandbox: createSandbox({ root: join(root, 'sb2'), listPids: () => [2 ** 30] }) });
   assert.equal(v.gate.publish, false);
   assert.ok(v.classes.infrastructure.some((m) => m.startsWith('isolation failure: processes of the sandbox are still running')), v.classes.infrastructure.join('; '));
+});
+
+test('verify: a failed npm ci or prisma generate is infrastructure and closes the gate', () => {
+  const ci = verifyFixture({}, { npmExtra: 'process.exit(1);\n' });
+  assert.equal(ci.gate.publish, false);
+  assert.equal(ci.trigger_attempt_2, false);
+  assert.ok(ci.classes.infrastructure.includes('backend head: npm ci failed (exit 1)'), ci.classes.infrastructure.join('; '));
+  const pg = verifyFixture({}, { npx: '#!/bin/sh\nexit 3\n' });
+  assert.equal(pg.gate.publish, false);
+  assert.equal(pg.trigger_attempt_2, false);
+  assert.ok(pg.classes.infrastructure.includes('backend head: prisma generate failed (exit 3)'), pg.classes.infrastructure.join('; '));
+});
+
+// The command lines the workflow really runs, parsed by the real parser: each must select the sandbox user.
+function commandArgs(text, script) {
+  const line = text.replace(/\\\n\s*/g, ' ').split('\n').find((l) => l.trim().startsWith('node ') && l.includes(script));
+  assert.ok(line, `no command line with ${script}`);
+  const tokens = line.trim().match(/"[^"]*"|'[^']*'|\S+/g).map((t) => t.replace(/^(["'])(.*)\1$/, '$2'));
+  return tokens.slice(tokens.findIndex((t) => t.endsWith(script)) + 1);
+}
+
+test('the verify and baseline command lines in the workflow run PR code as the sandbox user', () => {
+  const here = import.meta.dirname;
+  const verifyArgv = commandArgs(readFileSync(join(here, '../verify.sh'), 'utf8'), 'verify.mjs');
+  assert.equal(verifyArgv[0], 'verify');
+  const baselineArgv = commandArgs(readFileSync(join(here, '../../workflows/pr-test-agent.yml'), 'utf8'), 'baseline.mjs');
+  for (const argv of [verifyArgv.slice(1), baselineArgv]) {
+    const args = parseCliArgs(argv);
+    assert.equal(args.install, true, argv.join(' '));
+    assert.match(args['sandbox-user'], /prtest/, argv.join(' '));
+    assert.ok(args['sandbox-root'], argv.join(' '));
+    assert.equal(sandboxFromArgs(args, '/nonexistent').mode, 'user');
+  }
+  // A flag without its value is an error, not a swallow of the next flag.
+  assert.throws(() => parseCliArgs(['--out', '--install']), /--out needs a value/);
+  assert.throws(() => parseCliArgs(['--out']), /--out needs a value/);
+  assert.throws(() => sandboxFromArgs({ 'sandbox-root': '/srv/pr/x' }, '/nonexistent'), IsolationError);
 });

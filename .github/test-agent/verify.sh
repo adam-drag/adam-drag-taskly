@@ -22,7 +22,10 @@ node trusted/.claude/skills/verify-tests/scripts/verify.mjs verify --dir work --
   --candidate-out out/candidate --work "$RUNNER_TEMP/verify$n" --install \
   --sandbox-user "${PR_USER:-prtest}" --sandbox-root "${PR_ROOT:-/srv/pr}/verify$n"
 bash "$T/isolate.sh" reap
+# verify.json is written by the trusted verifier after the last reap. A run that did not use the sandbox
+# user (a wrong flag, say) fails the step, so no publish output is written.
 N=$n node -e '
   const v = require(`./out/verify${process.env.N}.json`);
+  if (v.isolation?.mode !== "user") { console.error(`::error::verify ran in ${v.isolation?.mode} mode, not as the sandbox user`); process.exit(1); }
   console.log(`publish=${v.gate.publish === true}`);
   console.log(`attempt2=${v.trigger_attempt_2 === true}`);' >> "$GITHUB_OUTPUT"

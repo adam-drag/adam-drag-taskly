@@ -131,7 +131,10 @@ jobs:
             --out out/baseline.json --work "$RUNNER_TEMP/baseline" --pr-induced-md out/pr-induced.md --install \
             --sandbox-user prtest --sandbox-root /srv/pr/baseline
           bash trusted/.github/test-agent/isolate.sh reap
-          node -e 'const b=require("./out/baseline.json"); console.log(`conclusive=${b.inconclusive.length === 0}`)' >> "$GITHUB_OUTPUT"
+          node -e '
+            const b = require("./out/baseline.json");
+            if (b.isolation?.mode !== "user") console.error(`::error::baseline ran in ${b.isolation?.mode} mode, not as the sandbox user`);
+            console.log(`conclusive=${b.inconclusive.length === 0 && b.isolation?.mode === "user"}`)' >> "$GITHUB_OUTPUT"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:

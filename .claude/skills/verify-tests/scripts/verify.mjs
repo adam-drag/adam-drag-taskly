@@ -33,10 +33,24 @@ const RUNS = 3;
 const ANSI = /\u001b\[[0-9;?]*[ -\/]*[@-~]/g;
 export const stripAnsi = (s) => String(s ?? '').replace(ANSI, '');
 
-function parseArgs(argv) {
-  const args = { mode: argv[0] };
-  for (let i = 1; i < argv.length; i++) if (argv[i].startsWith('--')) args[argv[i].slice(2)] = argv[++i];
+// Flags without a value. Every other flag takes the next token, which may not start with "--": a missing
+// value is an error, never a silent swallow of the next flag (which once turned off the sandbox user).
+export const BOOLEAN_FLAGS = new Set(['install']);
+export function parseCliArgs(argv) {
+  const args = {};
+  for (let i = 0; i < argv.length; i++) {
+    if (!argv[i].startsWith('--')) throw new Error(`unexpected argument ${argv[i]}`);
+    const key = argv[i].slice(2);
+    if (BOOLEAN_FLAGS.has(key)) { args[key] = true; continue; }
+    const value = argv[i + 1];
+    if (value === undefined || value.startsWith('--')) throw new Error(`--${key} needs a value`);
+    args[key] = value;
+    i++;
+  }
   return args;
+}
+function parseArgs(argv) {
+  return { mode: argv[0], ...parseCliArgs(argv.slice(1)) };
 }
 const readJson = (p) => JSON.parse(readFileSync(p, 'utf8'));
 
@@ -81,6 +95,7 @@ export function sandboxFromArgs(args, work) {
     if (!args['sandbox-root']) throw new IsolationError('--sandbox-user needs --sandbox-root');
     return createSandbox({ user: args['sandbox-user'], root: resolve(args['sandbox-root']) });
   }
+  if (args['sandbox-root']) throw new IsolationError('--sandbox-root without --sandbox-user');
   return createSandbox({ root: join(work, 'sandbox') });
 }
 
@@ -91,12 +106,13 @@ export function indexResults(json, root) {
   for (const tr of Array.isArray(json?.testResults) ? json.testResults : []) {
     if (!tr || typeof tr.name !== 'string' || (tr.assertionResults != null && !Array.isArray(tr.assertionResults))) continue;
     const file = relative(root, tr.name).split('\\').join('/');
-    const failed = tr.status !== 'passed' || (tr.assertionResults ?? []).some((a) => a.status === 'failed');
-    files[file] = { status: failed ? 'failed' : 'passed', message: stripAnsi(tr.message || ''), tests: (tr.assertionResults ?? []).length };
+    const assertions = (tr.assertionResults ?? []).filter((a) => a && typeof a === 'object');
+    const failed = tr.status !== 'passed' || assertions.some((a) => a.status === 'failed');
+    files[file] = { status: failed ? 'failed' : 'passed', message: stripAnsi(tr.message || ''), tests: assertions.length };
     // A file that failed without a failed assertion (an import error, a hook error, a failure after the
     // tests) gets one synthetic entry, so the per-test view never loses a failed file.
-    if (tr.status !== 'passed' && !(tr.assertionResults ?? []).some((a) => a.status === 'failed')) tests[`${file} > (file failed to run)`] = { status: 'failed', failure: stripAnsi(tr.message || '').split(`${root}/`).join('') };
-    for (const a of tr.assertionResults ?? []) {
+    if (tr.status !== 'passed' && !assertions.some((a) => a.status === 'failed')) tests[`${file} > (file failed to run)`] = { status: 'failed', failure: stripAnsi(tr.message || '').split(`${root}/`).join('') };
+    for (const a of assertions) {
       tests[`${file} > ${a.fullName}`] = { status: a.status, failure: stripAnsi((a.failureMessages ?? []).join('\n')).split(`${root}/`).join('') };
     }
   }
@@ -309,6 +325,9 @@ export function verify(args, opts = {}) {
           if (st) { ran++; if (st !== 'passed') failed++; }
         }
         box.remove(dst);
+        // A probable-bug path that exists at head gets its head bytes back, so the tree check sees the
+        // recorded tree.
+        if (recorded[p.path]) box.writeFile(dst, readFileSync(join(staging, p.path)));
         entry.runs = ran; entry.failed_runs = failed;
       }
       out.probable_bug_files.push(entry);
