@@ -1,0 +1,51 @@
+name: isolation probe
+# Scratch only (agent-dev): reads the permissions of a GitHub-hosted runner before the test agent uses a
+# separate OS user. It prints names and modes, never values of variables.
+on:
+  pull_request:
+    branches: [agent-dev]
+permissions:
+  contents: read
+jobs:
+  probe:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '22'
+          package-manager-cache: false
+      - name: Probe
+        run: |
+          set -x
+          id; uname -a; cat /etc/os-release | head -3
+          sudo -n true && echo "runner has passwordless sudo"
+          grep -E '^(HOME_MODE|UMASK)' /etc/login.defs || true
+          stat -c '%A %U:%G %n' /home /home/runner /home/runner/work "$GITHUB_WORKSPACE" "$RUNNER_TEMP" "$(dirname "$GITHUB_OUTPUT")" "$GITHUB_OUTPUT" "$GITHUB_ENV" "$GITHUB_PATH" "$GITHUB_STEP_SUMMARY" /var/run/docker.sock /opt/hostedtoolcache /tmp || true
+          NODE=$(command -v node); echo "node at $NODE"; stat -c '%A %U:%G %n' "$NODE" "$(dirname "$NODE")" "$(dirname "$(dirname "$NODE")")"
+          find /opt/hostedtoolcache -maxdepth 4 -perm -o+w -printf '%M %u:%g %p\n' | head -20
+          find /opt/hostedtoolcache/node -maxdepth 3 -printf '%M %u:%g %p\n' | head -20
+          sysctl fs.protected_symlinks fs.protected_hardlinks fs.protected_regular fs.protected_fifos || true
+          command -v cron crontab at atd systemd-run || true
+          ls /etc/sudoers.d/ ; sudo cat /etc/sudoers.d/* | grep -v '^#' || true
+          env | cut -d= -f1 | sort | tr '\n' ' '; echo
+          sudo useradd --system --create-home --home-dir /srv/prhome --shell /usr/sbin/nologin prtest
+          id prtest
+          sudo -n -u prtest -- id
+          sudo -n -u prtest -- sudo -n -l || echo "prtest: sudo -l refused (exit $?)"
+          sudo -n -u prtest -- sudo -n true || echo "prtest: sudo refused (exit $?)"
+          sudo -n -l -U prtest || true
+          sudo -n -u prtest -- sh -c "echo x >> '$GITHUB_OUTPUT'" || echo "prtest: write to GITHUB_OUTPUT refused (exit $?)"
+          sudo -n -u prtest -- sh -c "echo x > '$GITHUB_WORKSPACE/probe.txt'" || echo "prtest: write to workspace refused (exit $?)"
+          sudo -n -u prtest -- ls "$GITHUB_WORKSPACE" || echo "prtest: list workspace refused (exit $?)"
+          sudo -n -u prtest -- sh -c "echo x > '$RUNNER_TEMP/probe.txt'" || echo "prtest: write to RUNNER_TEMP refused (exit $?)"
+          sudo -n -u prtest -- sh -c "echo x >> '$NODE'" || echo "prtest: write to node refused (exit $?)"
+          sudo -n -u prtest -- touch "$(dirname "$NODE")/probe" || echo "prtest: write to node dir refused (exit $?)"
+          sudo -n -u prtest -- "$NODE" -e 'console.log("prtest runs node", process.version, process.getuid())'
+          sudo -n -u prtest -- "$(dirname "$NODE")/npm" --version
+          sudo -n -u prtest -- sh -c 'cat /proc/1/environ >/dev/null' || echo "prtest: read /proc/1/environ refused"
+          sudo -n -u prtest -- sh -c "ls /proc/$$/environ && cat /proc/$$/environ > /dev/null" || echo "prtest: read runner shell environ refused"
+          sudo -n -u prtest -- sh -c 'ls -la /var/run/docker.sock; docker ps' || echo "prtest: docker refused"
+          sudo -n -u prtest -- sh -c 'sleep 300 & echo started background $!'
+          pgrep -u prtest -a || true
+          sudo -n pkill -KILL -u prtest; sleep 1; pgrep -u prtest -a || echo "no prtest process left"
