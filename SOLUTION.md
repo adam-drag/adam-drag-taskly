@@ -354,12 +354,12 @@ The re-measured "after" numbers equal the numbers in the PR bodies.
 | `src/app/AppProviders.tsx` | 0 to 100 | 0 to 100 |
 | `src/features/todos/components/TodoItem.tsx` | 100 to 100 | 35.71 to 100 |
 | `src/features/todos/components/TodoList.tsx` | 20 to 100 | 62.5 to 100 |
-| `src/features/todos/components/DeleteTodoDialog.tsx` | 37.5 to 100 | 62.5 to 100 |
+| `src/features/todos/components/DeleteTodoDialog.tsx` | 37.5 to 100 | 62.5 to 87.5 |
 | `src/features/todos/components/TodoEditor.tsx` | 90 to 100 | 62.5 to 100 |
-| `src/features/todos/TodosPage.tsx` | 50 to 100 | 61.11 to 100 |
+| `src/features/todos/TodosPage.tsx` | 50 to 100 | 61.11 to 94.44 |
 | `src/hooks/useNotice.ts` | 71.42 to 100 | 75 to 100 |
 
-The remaining gaps on `main` HEAD: backend `factory.ts` line 20 (the `headersSent` branch), `lifespan.ts` line 14 (the default port) and the shutdown timeout callback; frontend `features/todos/api/todos.ts` lines 21 to 33, `TodoForm.tsx` lines 67 and 91, and `validateTodo` in `utils/todos.ts` (lines 10, 12 and 14 to 20). The design system stays out of coverage (`frontend/vite.config.ts:17`).
+The remaining gaps on `main` HEAD: backend `factory.ts` line 20 (the `headersSent` branch), `lifespan.ts` line 14 (the default port) and the shutdown timeout callback; frontend `features/todos/api/todos.ts` lines 21 to 33, `TodoForm.tsx` lines 67 and 91, `DeleteTodoDialog.tsx` line 19 (the `if (pending) return` branch), `TodosPage.tsx` line 18 (the `todosQuery.data ?? []` fallback) and `validateTodo` in `utils/todos.ts` (lines 10, 12 and 14 to 20). The design system stays out of coverage (`frontend/vite.config.ts:17`).
 
 **Agent-written and hand-edited.** From the PR bodies:
 
