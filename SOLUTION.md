@@ -6,13 +6,13 @@ Evidence is in [SOLUTION_DETAILS.md](SOLUTION_DETAILS.md). Main pieces: the [wor
 
 ## Design
 
-**GitHub Actions with a pinned Claude Code CLI.** The version is 2.1.304, fixed in the lockfile. The `claude-code-action` restores agent configuration from the base branch tip. This solution restores it from the base SHA of the event. I tested gh-aw v1.0.1 in a time-boxed spike. There the agent's push call failed with "No such tool available", because the setup publishes through gh-aw's own MCP tools. Making it work needs MCP tools and Bash in the agent file, and the same file wrote the coverage tests, so that change would alter the agent. I did not adopt it. I tested no other gh-aw setup ([details](SOLUTION_DETAILS.md#7-gh-aw-comparison)).
+**GitHub Actions with a pinned Claude Code CLI.** The version is 2.1.304, fixed in the lockfile. The `claude-code-action` (from version 1.0.74) restores agent configuration from the base branch tip. This solution restores it from the base SHA of the event. I tested gh-aw v1.0.1 in a time-boxed spike. There the agent's push call failed with "No such tool available", because the setup publishes through gh-aw's own MCP tools. Making it work needs MCP tools and Bash in the agent file, and the same file wrote the coverage tests, so that change would alter the agent. I did not adopt it. I tested no other gh-aw setup ([details](SOLUTION_DETAILS.md#7-gh-aw-comparison)).
 
 **Separate jobs.** Only the generate jobs hold the API key, and they run no PR code. Baseline and verify run PR code as an unprivileged user with no secret and a read-only token. Publish holds the write token and no PR code ([details](SOLUTION_DETAILS.md#1-design-decisions)).
 
-**Scripts from the base commit.** Every job runs scripts from the base SHA of the PR event, and the PR head is sanitized before the agent starts. Conformance check 3 showed that without the sanitize step a planted agent, skill and CLAUDE.md all took effect, and with it none did.
+**Scripts from the base commit.** Every job runs scripts from the base SHA of the PR event, and the PR head is sanitized before the agent starts. Conformance check 3 showed that without the sanitize step a planted agent took effect, and with it none did.
 
-**Two attempts.** Attempt 2 runs when verify finds a failing or untyped test file, or an open PR-induced failure. It starts from the attempt-1 patch and reads the verify feedback. Only the final verified tree is published.
+**Two attempts.** Attempt 2 runs when the guard passes and verify finds a failing or untyped test file, or an open PR-induced failure. It starts from the attempt-1 patch and reads the verify feedback. Only the final verified tree is published.
 
 **The published tree is the verified tree.** Publish writes the tree that verify recorded, through the Git Data API. It refuses a different tree and updates the branch without force, so GitHub refuses a moved head.
 
@@ -49,7 +49,7 @@ The agent is `.claude/agents/test-writer.md`. Its four skills in `.claude/skills
 
 ## Example run
 
-[PR 30](https://github.com/adam-drag/adam-drag-taskly/pull/30) adds a `completed` filter to the todo API and a completed count to the page header, in 12 source files with no tests. Run [40997344886](https://github.com/adam-drag/adam-drag-taskly/actions/runs/40997344886).
+[PR 30](https://github.com/adam-drag/adam-drag-taskly/pull/30) adds a `completed` filter to the todo API and a completed count to the page header, in 12 source files. Run [40997344886](https://github.com/adam-drag/adam-drag-taskly/actions/runs/40997344886).
 
 - Baseline: frontend 89/98 on the head and 98/98 on the merge base. The 9 failing tests in `TodosPage.test.tsx` are PR-induced.
 - Agent: attempt 1, 37 turns, 48 s, $0.1897. It decided `generate`, fixed those 9 tests, and changed 8 test files.
