@@ -7,5 +7,8 @@ export function createHealthRouter(database: Database) {
     await database.todo.findFirst({ select: { id: true } });
     res.json({ status: 'ok' });
   });
+  router.get('/health/echo/:word', (req, res) => {
+    res.json({ word: req.params.word });
+  });
   return router;
 }
