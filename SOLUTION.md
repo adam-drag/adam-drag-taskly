@@ -10,7 +10,7 @@ Details: [SOLUTION_DETAILS.md](SOLUTION_DETAILS.md). Main pieces: the [workflow]
 
 **Separate jobs.** Only the generate jobs hold the API key, and they run no PR code. Baseline and verify run PR code as an unprivileged user with no secret and a read-only token. Publish holds the write token and no PR code ([details](SOLUTION_DETAILS.md#1-design-decisions)).
 
-**Scripts from the base commit.** Every job runs scripts from the base SHA of the PR event, and the PR head is sanitized before the agent starts. Conformance check 3 showed that without the sanitize step a planted agent took effect, and with it none did.
+**Scripts from the base commit.** Every job runs scripts from the base SHA of the PR event, and the PR head is sanitized before the agent starts. In a test run without the sanitize step, an agent planted in the PR took effect. With the step, none did ([details](SOLUTION_DETAILS.md#3-the-agent-and-the-skills)).
 
 **Two attempts.** Attempt 2 runs when the guard passes, verify finds no infrastructure problem, and it finds a failing or flaky test file, a failing type check or an open PR-induced failure. It starts from the attempt-1 patch and reads the verify feedback. Only the final verified tree is published.
 
