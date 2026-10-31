@@ -139,7 +139,7 @@ The coverage tests (section 5) came from running the agent locally with the same
 | Isolation of PR code | `.github/test-agent/isolate.sh`, `verify.sh`, `.claude/skills/verify-tests/scripts/sandbox.mjs` |
 | Unit tests of the scripts | `.github/test-agent/tests/*.test.mjs`, run by `.github/workflows/ci.yml` |
 
-The split into four skills is a design choice of this solution.
+The four skills follow the steps of the job: analyze, write, check. The agent loads each skill at the step that needs it, so a backend-only PR never loads the frontend conventions. There is one skill per stack, because the stacks share almost no conventions. `analyze-pr-changes` and `verify-tests` hold the scripts that the pipeline runs (`scope.mjs`, `guard.mjs`, `verify.mjs`, `sandbox.mjs`), so the rules that the agent reads and the rules that the pipeline enforces sit in the same folder. The same skills wrote the coverage tests locally (section 5) and run in the PR workflow.
 
 **The agent.** `test-writer` has the tools Read, Grep, Glob, Edit, Write, Skill and StructuredOutput. It has no Bash, so it cannot run tests. The agent file gives it these hard rules. They are instructions. The Edit rules in the settings and the guard enforce the path limits, and the guard checks for common forms of weakening (below, and section 9 for what it misses):
 

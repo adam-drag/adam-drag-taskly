@@ -1,5 +1,7 @@
 # Taskly App Node
 
+The PR test agent and the solution notes are described in [SOLUTION.md](SOLUTION.md).
+
 ## Setup
 
 ```sh
