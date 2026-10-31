@@ -4,7 +4,7 @@ This repository adds a PR workflow to the Taskly app. On every PR to `main` the 
 
 Details: [SOLUTION_DETAILS.md](SOLUTION_DETAILS.md). Main pieces: the [workflow](.github/workflows/pr-test-agent.yml), the [agent](.claude/agents/test-writer.md), the [skills](.claude/skills), and the [scripts](.github/test-agent).
 
-## Design
+## Technical decisions
 
 **GitHub Actions with a pinned Claude Code CLI.** The version is 2.1.304, fixed in the lockfile. The `claude-code-action` (from version 1.0.74) restores agent configuration from the base branch tip. This solution restores it from the base SHA of the event. I tested gh-aw v1.0.1 in a time-boxed spike. There the agent's push call failed with "No such tool available", because the setup publishes through gh-aw's own MCP tools. Making it work needs MCP tools and Bash in the agent file, and the same file wrote the coverage tests, so that change would alter the agent. I did not adopt it and tested no other gh-aw setup ([details](SOLUTION_DETAILS.md#7-gh-aw-comparison)).
 
@@ -53,6 +53,7 @@ The agent is `.claude/agents/test-writer.md`. Its four skills in `.claude/skills
 
 - Baseline: frontend 89/98 on the head and 98/98 on the merge base. The 9 failing tests in `TodosPage.test.tsx` are PR-induced.
 - Agent: attempt 1, 37 turns, 48 s, $0.1897. It decided `generate`, fixed those 9 tests, and changed 8 test files.
+- Skills used: `analyze-pr-changes`, `backend-unit-tests`, `frontend-unit-tests` and `verify-tests`.
 - Verify: type checks pass, backend 101/101, frontend 104/104.
 - Publish: bot commit [`521193d`](https://github.com/adam-drag/adam-drag-taskly/commit/521193d510fc96a49da2f70bf9c09daa327a7de9), status success. Its tree equals the verified tree.
 
@@ -69,6 +70,11 @@ Measured on `main` (`a20b82b`). The "before" values are from the first commit.
 
 The agent wrote the coverage tests, except one frontend fixture. I reviewed every file. A few needed hand edits. Five application issues were reported, none fixed here ([details](SOLUTION_DETAILS.md#5-coverage-work-and-findings)).
 
+## Assumptions
+
+- The application is small enough for the diff caps (20 source files, 800 changed source lines).
+- I did not verify that the Anthropic Console can set a spend limit on the key ([details](SOLUTION_DETAILS.md#8-assumptions)).
+
 ## Limitations
 
 The most important limits come first ([all limits](SOLUTION_DETAILS.md#9-limitations)).
@@ -79,12 +85,7 @@ The most important limits come first ([all limits](SOLUTION_DETAILS.md#9-limitat
 4. **The guard refuses some legitimate edits.** It refuses an undeclared update of a test that the agent wrote earlier in the same PR, and an undeclared growth of a single-line import. Both stopped live runs. The weakening check is a heuristic and can miss a loosened matcher.
 5. **Bot commits get no executed CI.** Commits pushed with `GITHUB_TOKEN` start no normal runs, so the `test-agent/verified` status holds the result.
 
-## Assumptions
-
-- The application is small enough for the diff caps (20 source files, 800 changed source lines).
-- I did not verify that the Anthropic Console can set a spend limit on the key ([details](SOLUTION_DETAILS.md#8-assumptions)).
-
-## Production priorities
+## Changes for a production version
 
 1. **Protect `.github` and `.claude` with a ruleset.** It closes limitation 1.
 2. **Limit the key and the runner.** If the Console offers a spend limit, a dedicated key with one caps the cost. An egress restriction (for example `harden-runner`) limits which hosts the runner can reach.
