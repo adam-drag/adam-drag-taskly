@@ -11,6 +11,7 @@ import { DeleteTodoDialog } from './components/DeleteTodoDialog'
 import { TodoEditor } from './components/TodoEditor'
 import { TodoList } from './components/TodoList'
 import { TodosHeader } from './components/TodosHeader'
+import { useCompletedCountQuery } from './hooks/useCompletedCountQuery'
 import { useTodoFilters } from './hooks/useTodoFilters'
 import { useTodosBusy } from './hooks/useTodosBusy'
 import { useTodosQuery } from './hooks/useTodosQuery'
@@ -19,6 +20,9 @@ import { TodosPage } from './TodosPage'
 
 vi.mock('../../design-system', () => import('../../design-system/mocks'))
 vi.mock('../../hooks/useNotice', () => ({ useNotice: vi.fn() }))
+vi.mock('./hooks/useCompletedCountQuery', () => ({
+  useCompletedCountQuery: vi.fn(),
+}))
 vi.mock('./hooks/useTodoFilters', () => ({ useTodoFilters: vi.fn() }))
 vi.mock('./hooks/useTodosBusy', () => ({ useTodosBusy: vi.fn() }))
 vi.mock('./hooks/useTodosQuery', () => ({ useTodosQuery: vi.fn() }))
@@ -70,6 +74,9 @@ function setup({
       error: toggleError,
     }),
   )
+  vi.mocked(useCompletedCountQuery).mockReturnValue(
+    queryResultFixture({ data: 3 }),
+  )
   vi.mocked(useTodosBusy).mockReturnValue(busy)
   vi.mocked(useNotice).mockReturnValue({ message: '', notify })
   vi.mocked(useTodoFilters).mockReturnValue({
@@ -84,6 +91,11 @@ function setup({
   render(<TodosPage />)
   return { notify, mutateAsync }
 }
+
+it('passes the server completed count to the header', () => {
+  setup()
+  expect(propsOf(TodosHeader).completedCount).toBe(3)
+})
 
 it('toggles a todo and notifies that it is complete', async () => {
   const todo = { ...todoFixture, id: 5, completed: false }

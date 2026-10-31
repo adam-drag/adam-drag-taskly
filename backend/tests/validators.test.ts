@@ -1,8 +1,14 @@
 import { describe, it, expect } from 'vitest';
-import { createSchema, updateSchema, idSchema, todoSchema } from '../src/features/todos/validators.ts';
+import { createSchema, updateSchema, idSchema, todoSchema, listQuerySchema } from '../src/features/todos/validators.ts';
 import { todo } from './fixture.ts';
 
 describe('todo validation', () => {
+  it('parses the completed list filter into a boolean and allows omission', () => {
+    expect(listQuerySchema.parse({ completed: 'true' })).toEqual({ completed: true });
+    expect(listQuerySchema.parse({ completed: 'false' })).toEqual({ completed: false });
+    expect(listQuerySchema.parse({})).toEqual({});
+    expect(listQuerySchema.safeParse({ completed: 'TRUE' }).success).toBe(false);
+  });
   it('trims text and supplies create defaults', () => {
     expect(createSchema.parse({ title: '  Task  ' })).toEqual({
       title: 'Task', description: '', priority: 'medium', due_date: null, completed: false,

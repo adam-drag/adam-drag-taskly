@@ -45,6 +45,19 @@ describe('useUpdateTodoMutation', () => {
     expect(queryClient.getQueryData(todoKeys.list)).toEqual([saved, other])
   })
 
+  it('invalidates the completed count after saving', async () => {
+    vi.mocked(todosApi.update).mockResolvedValue(todoFixture)
+    const { queryClient, wrapper } = setup()
+    const invalidate = vi.spyOn(queryClient, 'invalidateQueries')
+    const { result } = renderHook(() => useUpdateTodoMutation(), { wrapper })
+
+    await act(() =>
+      result.current.mutateAsync({ id: 7, input: { completed: true } }),
+    )
+
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: todoKeys.completed })
+  })
+
   it('leaves the cache undefined when it was undefined', async () => {
     vi.mocked(todosApi.update).mockResolvedValue(todoFixture)
     const { queryClient, wrapper } = setup()
